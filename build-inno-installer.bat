@@ -22,7 +22,10 @@ copy /Y USER_AGREEMENT.en.md "%DIST%\USER_AGREEMENT.en.md" >nul
 copy /Y README.md "%DIST%\README.ko.md" >nul
 copy /Y README.en.md "%DIST%\README.en.md" >nul
 
-set ISCC=
+if not "%~1"=="" set "ISCC=%~1"
+if defined INNO_ISCC set "ISCC=%INNO_ISCC%"
+if exist "C:\Users\gfs2\AppData\Local\Programs\Inno Setup 6\ISCC.exe" set "ISCC=C:\Users\gfs2\AppData\Local\Programs\Inno Setup 6\ISCC.exe"
+
 where ISCC.exe >nul 2>nul
 if not errorlevel 1 for /f "delims=" %%P in ('where ISCC.exe') do if "%ISCC%"=="" set "ISCC=%%P"
 
