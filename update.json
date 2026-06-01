@@ -1,8 +1,7 @@
 ﻿{
     "version":  "1.2.1",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "5E1FA39B8FF9D9898DC6172754112C88327651A56BD4EADB9B18EAE39ED928C9",
+    "sha256":  "AE6035C971F375CBDADDFC8220F4EF5CBF0E50042157E0A435D18C913C8266DF",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
     "notes":  "Improves the daily report with commit/pagefile limits, separate pool metrics, process growth TOP list, and chart tooltips showing RAM percent and MB by hour."
 }
-
