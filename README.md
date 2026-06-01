@@ -47,6 +47,12 @@ MemoryGuardianSetup.exe
 - 설치 후 앱 자동 실행
 - `uninstall.ps1` 제거 스크립트 포함
 
+## 라이선스 및 사용자 책임
+
+이 프로젝트는 오픈소스이며 MIT License를 따릅니다. 사용 중 발생하는 문제는 사용자 환경과 사용 방식에 따라 달라질 수 있으므로 사용자가 자신의 책임 아래 사용해야 합니다.
+
+2차 수정 또는 2차 배포는 허용되며, 배포 시 원작자 저작권 표시와 라이선스 고지를 보존하면 됩니다. 자세한 내용은 [USER_AGREEMENT.md](USER_AGREEMENT.md)와 [LICENSE](LICENSE)를 확인하세요.
+
 ## 리포트 저장 위치
 
 ```text

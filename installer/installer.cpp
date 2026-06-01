@@ -138,19 +138,25 @@ static void paint_ui(HWND hwnd, HDC dc) {
               L"Windows may ask for administrator permission. Choose Yes so memory cleanup and startup protection can be registered correctly.",
               infoText, g_ui.bodyFont, RGB(30, 64, 175), DT_LEFT | DT_TOP | DT_WORDBREAK);
 
-    RECT feature1 {326, 328, client.right - 68, 364};
-    RECT feature2 {326, 368, client.right - 68, 404};
-    RECT feature3 {326, 408, client.right - 68, 444};
+    RECT feature1 {326, 318, client.right - 68, 354};
+    RECT feature2 {326, 356, client.right - 68, 392};
+    RECT feature3 {326, 394, client.right - 68, 430};
+    RECT feature4 {326, 432, client.right - 68, 468};
     draw_text(mem, L"✓ Installs to C:\\Program Files\\Memory Guardian", feature1, g_ui.bodyFont, RGB(30, 41, 59), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_text(mem, L"✓ Starts quietly in the tray when Windows starts", feature2, g_ui.bodyFont, RGB(30, 41, 59), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     draw_text(mem, L"✓ Includes SHA-256 update verification metadata", feature3, g_ui.bodyFont, RGB(30, 41, 59), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    draw_text(mem, L"✓ Open source. Keep copyright notice when redistributing.", feature4, g_ui.bodyFont, RGB(30, 41, 59), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     if (g_ui.installing) {
-        RECT installing {326, 472, client.right - 68, 506};
+        RECT installing {326, 484, client.right - 68, 516};
         draw_text(mem, L"Installing... please wait.", installing, g_ui.bodyFont, RGB(37, 99, 235), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     } else if (g_ui.installed) {
-        RECT done {326, 472, client.right - 68, 506};
+        RECT done {326, 484, client.right - 68, 516};
         draw_text(mem, L"Done. You can close this window.", done, g_ui.bodyFont, RGB(5, 150, 105), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    } else {
+        RECT license {326, 486, client.right - 68, 530};
+        draw_text(mem, L"By installing, you agree to the included MIT License and user responsibility notice.",
+                  license, g_ui.smallFont, RGB(100, 116, 139), DT_LEFT | DT_TOP | DT_WORDBREAK);
     }
 
     BitBlt(dc, 0, 0, client.right, client.bottom, mem, 0, 0, SRCCOPY);

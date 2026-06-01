@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
 $version = "v1.1.3"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -24,7 +24,7 @@ $notes = @"
 - Provide SHA256SUMS.txt to detect corrupt or modified downloads
 
 SHA-256:
-6D0DBD4530FE60271648A8D0DD352B070CF4687F485C09D95D277221495C29E6
+7465FD34FFAC302F4CA2F9C8DB6D056AFA1C9AA0C58B971B94F569B0E8E23C63
 "@
 
 $previousErrorActionPreference = $ErrorActionPreference
@@ -47,3 +47,4 @@ Write-Host "Done." -ForegroundColor Green
 Write-Host "https://github.com/haimez-kor/memory-guardian/releases/tag/$version"
 Write-Host ""
 Read-Host "Press Enter to close"
+

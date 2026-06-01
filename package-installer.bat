@@ -15,6 +15,8 @@ for %%D in (generic imageformats networkinformation platforms styles tls) do (
   if exist "build\%%D" xcopy /E /I /Y "build\%%D" "%DIST%\%%D" >nul
 )
 copy /Y installer\update.json "%DIST%\update.json" >nul
+copy /Y LICENSE "%DIST%\LICENSE" >nul
+copy /Y USER_AGREEMENT.md "%DIST%\USER_AGREEMENT.md" >nul
 
 if exist installer\app.zip del /Q installer\app.zip
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '%DIST%\*' -DestinationPath 'installer\app.zip' -Force"
