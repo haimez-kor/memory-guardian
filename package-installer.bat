@@ -6,7 +6,7 @@ set PATH=C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
 call build.bat
 if errorlevel 1 exit /b 1
 
-set DIST=dist-app-v1.1.9
+set DIST=dist-app-v1.2.0
 if not exist "%DIST%" mkdir "%DIST%"
 
 copy /Y build\MemoryGuardian.exe "%DIST%\" >nul
@@ -34,4 +34,5 @@ popd
 
 echo Built MemoryGuardianSetup.exe
 endlocal
+
 

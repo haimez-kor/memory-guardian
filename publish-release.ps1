@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.1.9"
+$version = "v1.2.0"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Requests administrator permission on startup, prevents repeated cleanup spam when RAM does not drop, keeps reports/settings during updates, improves report UI spacing, and keeps SHA-256 verified automatic updates."
+    notes = "Adds process detail view with PID, start/current memory, growth amount, MB per hour, and learned status labels such as normal pattern, warning, and leak suspected."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,7 +42,7 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.1.9
+## Memory Guardian 1.2.0
 
 - Add commit memory, page file, Non-Paged Pool, and Paged Pool tracking
 - Show top RAM processes with today's growth amount
@@ -53,6 +53,9 @@ $notes = @"
 - Stop repeated cleanup attempts for 10 minutes when RAM does not drop after cleanup
 - Improve daily report card spacing to prevent clipped numbers
 - Keep reports and learned settings during automatic reinstall updates
+- Add process detail view with PID, start memory, current memory, growth amount, and MB per hour
+- Label processes as normal pattern, warning, or leak suspected
+- Save process growth speed and pattern labels to CSV and daily reports
 - Keep SHA-256 update verification metadata for corruption/tamper checks
 
 SHA-256:
@@ -68,10 +71,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.1.9" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.2.0" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.1.9" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.2.0" --notes $notes --latest
 }
 
 Write-Host ""
@@ -79,4 +82,5 @@ Write-Host "Done." -ForegroundColor Green
 Write-Host "https://github.com/haimez-kor/memory-guardian/releases/tag/$version"
 Write-Host ""
 Read-Host "Press Enter to close"
+
 

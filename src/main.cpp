@@ -7,7 +7,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.1.9";
+static const char *APP_VERSION = "1.2.0";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -462,13 +462,31 @@ public:
         processLayout->addWidget(topProcesses, 1);
         lowerLayout->addWidget(processPanel, 5);
 
+        auto *rightStack = new QVBoxLayout();
+        rightStack->setSpacing(14);
+
+        auto *detailPanel = new QFrame();
+        detailPanel->setObjectName("panel");
+        auto *detailLayout = new QVBoxLayout(detailPanel);
+        detailLayout->setContentsMargins(20, 14, 20, 14);
+        detailLayout->setSpacing(8);
+        auto *detailTitle = new QLabel(ko("프로세스 상세"));
+        detailTitle->setObjectName("metricLabel");
+        processDetail = new QLabel(ko("증가량이 있는 프로세스를 관찰하는 중입니다."));
+        processDetail->setObjectName("processDetail");
+        processDetail->setWordWrap(true);
+        detailLayout->addWidget(detailTitle);
+        detailLayout->addWidget(processDetail);
+        rightStack->addWidget(detailPanel, 0);
+
         log = new QTextEdit();
         log->setObjectName("log");
         log->setReadOnly(true);
         log->setMinimumHeight(164);
         log->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         log->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        lowerLayout->addWidget(log, 6);
+        rightStack->addWidget(log, 1);
+        lowerLayout->addLayout(rightStack, 6);
         root->addLayout(lowerLayout, 1);
 
         timer.setInterval(2000);
@@ -568,6 +586,7 @@ private:
     QLabel *busyHour = nullptr;
     QLabel *leakStatus = nullptr;
     QLabel *optimizeCountLabel = nullptr;
+    QLabel *processDetail = nullptr;
     QProgressBar *meter = nullptr;
     QCheckBox *autoTune = nullptr;
     QSpinBox *threshold = nullptr;
@@ -796,6 +815,7 @@ private:
         updateProcessTrends(processes, snapshot.time);
         updateUi(snapshot, qi, activeThreshold);
         updateTopProcesses(processes);
+        updateProcessDetail();
         appendCsv(snapshot, qi, activeThreshold);
         appendProcessCsv(processes, snapshot.time);
 
@@ -1070,16 +1090,48 @@ private:
         return qint64(trend.lastMb) - qint64(trend.firstMb);
     }
 
-    QString biggestGrowthText() const {
+    double processGrowthPerHour(const ProcessTrend &trend) const {
+        qint64 seconds = trend.firstSeen.secsTo(trend.lastSeen);
+        if (seconds <= 0) {
+            return 0.0;
+        }
+        qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
+        return double(delta) * 3600.0 / double(seconds);
+    }
+
+    QString processPatternLabel(const ProcessTrend &trend) const {
+        qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
+        double speed = processGrowthPerHour(trend);
+        qint64 observedMinutes = std::max<qint64>(1, trend.firstSeen.secsTo(trend.lastSeen) / 60);
+
+        if (delta >= 1024 || (observedMinutes >= 30 && speed >= 300.0)) {
+            return ko("누수 의심");
+        }
+        if (delta >= 300 || (observedMinutes >= 20 && speed >= 120.0)) {
+            return ko("주의");
+        }
+        return ko("정상 패턴");
+    }
+
+    const ProcessTrend *mostImportantProcessTrend() const {
         const ProcessTrend *best = nullptr;
-        qint64 bestDelta = 0;
+        double bestScore = -1.0;
         for (auto it = processTrends.constBegin(); it != processTrends.constEnd(); ++it) {
-            qint64 delta = qint64(it.value().lastMb) - qint64(it.value().firstMb);
-            if (delta > bestDelta) {
-                bestDelta = delta;
+            const ProcessTrend &trend = it.value();
+            qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
+            double speed = processGrowthPerHour(trend);
+            double score = double(std::max<qint64>(0, delta)) + std::max(0.0, speed) * 0.4 + double(trend.lastMb) * 0.05;
+            if (score > bestScore) {
+                bestScore = score;
                 best = &it.value();
             }
         }
+        return best;
+    }
+
+    QString biggestGrowthText() const {
+        const ProcessTrend *best = mostImportantProcessTrend();
+        qint64 bestDelta = best ? qint64(best->lastMb) - qint64(best->firstMb) : 0;
 
         if (!best || bestDelta < 300) {
             return QString();
@@ -1121,17 +1173,48 @@ private:
             }
             qint64 delta = processDeltaMb(process);
             QString deltaText = delta >= 0 ? QString("+%1 MB").arg(delta) : QString("%1 MB").arg(delta);
-            lines << QString("%1. %2%3 MB  오늘 %4  PID %5")
+            QString key = QString("%1:%2").arg(process.name).arg(process.pid);
+            QString pattern = processTrends.contains(key) ? processPatternLabel(processTrends[key]) : ko("관찰 중");
+            lines << QString("%1. %2%3 MB  오늘 %4  %5  PID %6")
                          .arg(rank++)
                          .arg(process.name.left(22), -24)
                          .arg(process.usedMb, 5)
                          .arg(deltaText, 9)
+                         .arg(pattern)
                          .arg(process.pid);
         }
         if (lines.isEmpty()) {
             lines << ko("프로세스 정보를 읽는 중입니다. 관리자 권한이면 더 정확합니다.");
         }
         topProcesses->setPlainText(lines.join('\n'));
+    }
+
+    void updateProcessDetail() {
+        if (!processDetail) {
+            return;
+        }
+
+        const ProcessTrend *trend = mostImportantProcessTrend();
+        if (!trend) {
+            processDetail->setText(ko("증가량이 있는 프로세스를 관찰하는 중입니다."));
+            return;
+        }
+
+        qint64 delta = qint64(trend->lastMb) - qint64(trend->firstMb);
+        double speed = processGrowthPerHour(*trend);
+        QString deltaText = delta >= 0 ? ko("+%1 MB").arg(delta) : ko("%1 MB").arg(delta);
+        QString speedText = speed >= 0.0 ? ko("+%1 MB/h").arg(QString::number(speed, 'f', 0))
+                                         : ko("%1 MB/h").arg(QString::number(speed, 'f', 0));
+        QString pattern = processPatternLabel(*trend);
+
+        processDetail->setText(ko("%1\nPID %2\n시작 메모리 %3 MB    현재 메모리 %4 MB\n증가량 %5    증가속도 %6\n판정: %7")
+                                   .arg(trend->name)
+                                   .arg(trend->pid)
+                                   .arg(trend->firstMb)
+                                   .arg(trend->lastMb)
+                                   .arg(deltaText)
+                                   .arg(speedText)
+                                   .arg(pattern));
     }
 
     int heaviestHour() const {
@@ -1553,7 +1636,7 @@ private:
 
         QTextStream out(&file);
         if (fresh) {
-            out << "time,process_name,pid,ram_mb,delta_today_mb\n";
+            out << "time,process_name,pid,ram_mb,delta_today_mb,growth_mb_per_hour,pattern\n";
         }
 
         int written = 0;
@@ -1563,11 +1646,16 @@ private:
             }
             QString safeName = process.name;
             safeName.replace('"', "\"\"");
+            QString key = QString("%1:%2").arg(process.name).arg(process.pid);
+            double speed = processTrends.contains(key) ? processGrowthPerHour(processTrends[key]) : 0.0;
+            QString pattern = processTrends.contains(key) ? processPatternLabel(processTrends[key]) : ko("관찰 중");
             out << time.toString(Qt::ISODate) << ','
                 << '"' << safeName << '"' << ','
                 << process.pid << ','
                 << process.usedMb << ','
-                << processDeltaMb(process) << '\n';
+                << processDeltaMb(process) << ','
+                << QString::number(speed, 'f', 1) << ','
+                << '"' << pattern << '"' << '\n';
             written++;
         }
     }
@@ -1617,13 +1705,16 @@ private:
             if (delta <= 0 || listed >= 5) {
                 continue;
             }
-            out << QString("- %1 PID %2: %3 MB -> %4 MB (%5%6 MB)\n")
+            double speed = processGrowthPerHour(trend);
+            out << QString("- %1 PID %2: %3 MB -> %4 MB (%5%6 MB, %7 MB/h, %8)\n")
                        .arg(trend.name)
                        .arg(trend.pid)
                        .arg(trend.firstMb)
                        .arg(trend.lastMb)
                        .arg(delta > 0 ? "+" : "")
-                       .arg(delta);
+                       .arg(delta)
+                       .arg(QString::number(speed, 'f', 0))
+                       .arg(processPatternLabel(trend));
             listed++;
         }
         if (listed == 0) {
@@ -1904,4 +1995,5 @@ int main(int argc, char *argv[]) {
 
     return app.exec();
 }
+
 
