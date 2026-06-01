@@ -14,7 +14,8 @@ If you redistribute the Software, distribute a modified version, or include part
 
 ```text
 Memory Guardian
-Copyright (c) 2026 haimez-kor
+Made by HAIMEZ
+Copyright (c) 2026 HAIMEZ
 Licensed under the MIT License.
 Original project: https://github.com/haimez-kor/memory-guardian
 ```

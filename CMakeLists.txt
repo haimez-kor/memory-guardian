@@ -17,4 +17,5 @@ target_link_libraries(MemoryGuardian PRIVATE
     Qt6::Widgets
     Qt6::Network
     psapi
+    shell32
 )

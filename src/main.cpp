@@ -1,12 +1,13 @@
-#include <QtWidgets>
+﻿#include <QtWidgets>
 #include <QtNetwork>
 #include <algorithm>
 #include <windows.h>
 #include <psapi.h>
+#include <shellapi.h>
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.1.5";
+static const char *APP_VERSION = "1.1.7";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -282,18 +283,21 @@ public:
         reportDate = QDate::currentDate();
         loadLearnedProfile();
         setWindowTitle(ko("메모리 자동 보호기"));
-        setMinimumSize(980, 800);
+        setMinimumSize(1000, 720);
+        resize(1040, 780);
 
         auto *root = new QVBoxLayout(this);
-        root->setContentsMargins(28, 26, 28, 26);
-        root->setSpacing(18);
+        root->setContentsMargins(24, 22, 24, 22);
+        root->setSpacing(14);
 
         auto *header = new QHBoxLayout();
         auto *titleGroup = new QVBoxLayout();
         title = new QLabel(ko("메모리 자동 보호기"));
         subtitle = new QLabel(ko("하루 동안 PC 사용 패턴을 학습해 다음 날부터 자동 정리 기준을 맞춥니다."));
+        creatorLabel = new QLabel(ko("HAIMEZ 제작"));
         titleGroup->addWidget(title);
         titleGroup->addWidget(subtitle);
+        titleGroup->addWidget(creatorLabel);
         titleGroup->setSpacing(4);
 
         statusPill = new QLabel(ko("자동 보호 중"));
@@ -305,10 +309,12 @@ public:
         auto *hero = new QFrame();
         hero->setObjectName("hero");
         auto *heroLayout = new QVBoxLayout(hero);
-        heroLayout->setContentsMargins(26, 22, 26, 22);
-        heroLayout->setSpacing(16);
+        heroLayout->setContentsMargins(24, 18, 24, 18);
+        heroLayout->setSpacing(12);
 
         auto *metrics = new QHBoxLayout();
+        metrics->setContentsMargins(0, 0, 0, 0);
+        metrics->setSpacing(28);
         ramPercent = new QLabel("0%");
         qiScore = new QLabel(ko("100점"));
         adaptiveValue = new QLabel("80%");
@@ -323,18 +329,20 @@ public:
         heroLayout->addWidget(meter);
 
         summary = new QLabel(ko("메모리 상태를 확인하는 중입니다."));
+        summary->setWordWrap(true);
         heroLayout->addWidget(summary);
         systemDetail = new QLabel(ko("커밋 메모리와 페이지 파일 상태를 확인하는 중입니다."));
         systemDetail->setObjectName("metricLabel");
+        systemDetail->setWordWrap(true);
         heroLayout->addWidget(systemDetail);
         root->addWidget(hero);
 
         auto *controls = new QFrame();
         controls->setObjectName("panel");
         auto *controlLayout = new QGridLayout(controls);
-        controlLayout->setContentsMargins(22, 18, 22, 18);
-        controlLayout->setHorizontalSpacing(14);
-        controlLayout->setVerticalSpacing(8);
+        controlLayout->setContentsMargins(20, 14, 20, 14);
+        controlLayout->setHorizontalSpacing(12);
+        controlLayout->setVerticalSpacing(7);
 
         autoTune = new QCheckBox(ko("1시간 임시 학습 + 하루 정식 학습 기준 사용"));
         autoTune->setChecked(true);
@@ -361,7 +369,7 @@ public:
         reportButton = new QPushButton(ko("오늘 리포트 보기"));
         updateButton = new QPushButton(ko("업데이트 확인"));
 
-        controlLayout->addWidget(autoTune, 0, 0, 1, 2);
+        controlLayout->addWidget(autoTune, 0, 0, 1, 4);
         controlLayout->addWidget(new QLabel(ko("기준값")), 1, 0);
         controlLayout->addWidget(new QLabel(ko("자동 처리")), 1, 1);
         controlLayout->addWidget(new QLabel(ko("사용 모드")), 1, 2);
@@ -373,47 +381,68 @@ public:
         controlLayout->addWidget(startButton, 2, 4);
         controlLayout->addWidget(reportButton, 2, 5);
         controlLayout->addWidget(updateButton, 2, 6);
-        controlLayout->setColumnStretch(2, 1);
+        controlLayout->setColumnMinimumWidth(0, 82);
+        controlLayout->setColumnMinimumWidth(1, 112);
+        controlLayout->setColumnMinimumWidth(2, 120);
+        controlLayout->setColumnMinimumWidth(3, 128);
+        controlLayout->setColumnStretch(3, 1);
+        controlLayout->setColumnStretch(5, 1);
+        controlLayout->setColumnStretch(6, 1);
         root->addWidget(controls);
 
         auto *reportPanel = new QFrame();
         reportPanel->setObjectName("panel");
-        auto *reportLayout = new QHBoxLayout(reportPanel);
-        reportLayout->setContentsMargins(22, 16, 22, 16);
-        reportLayout->setSpacing(14);
+        auto *reportLayout = new QGridLayout(reportPanel);
+        reportLayout->setContentsMargins(20, 12, 20, 12);
+        reportLayout->setHorizontalSpacing(10);
+        reportLayout->setVerticalSpacing(6);
         todayAverage = new QLabel(ko("오늘 평균: -"));
         todayPeak = new QLabel(ko("오늘 최고: -"));
         busyHour = new QLabel(ko("가장 무거운 시간: -"));
         leakStatus = new QLabel(ko("누수 의심: 확인 중"));
         optimizeCountLabel = new QLabel(ko("자동 정리: 0회"));
-        reportLayout->addWidget(todayAverage, 1);
-        reportLayout->addWidget(todayPeak, 1);
-        reportLayout->addWidget(busyHour, 1);
-        reportLayout->addWidget(leakStatus, 1);
-        reportLayout->addWidget(optimizeCountLabel, 1);
+        for (QLabel *label : {todayAverage, todayPeak, busyHour, leakStatus, optimizeCountLabel}) {
+            label->setWordWrap(true);
+            label->setMinimumHeight(24);
+        }
+        reportLayout->addWidget(todayAverage, 0, 0);
+        reportLayout->addWidget(todayPeak, 0, 1);
+        reportLayout->addWidget(busyHour, 0, 2);
+        reportLayout->addWidget(leakStatus, 0, 3);
+        reportLayout->addWidget(optimizeCountLabel, 0, 4);
+        for (int i = 0; i < 5; ++i) {
+            reportLayout->setColumnStretch(i, 1);
+        }
         root->addWidget(reportPanel);
+
+        auto *lowerLayout = new QHBoxLayout();
+        lowerLayout->setSpacing(14);
 
         auto *processPanel = new QFrame();
         processPanel->setObjectName("panel");
         auto *processLayout = new QVBoxLayout(processPanel);
-        processLayout->setContentsMargins(22, 16, 22, 16);
+        processLayout->setContentsMargins(20, 14, 20, 14);
         processLayout->setSpacing(8);
         auto *processTitle = new QLabel(ko("RAM 사용 상위 프로그램 / 오늘 증가량"));
         processTitle->setObjectName("metricLabel");
         topProcesses = new QTextEdit();
         topProcesses->setObjectName("log");
         topProcesses->setReadOnly(true);
-        topProcesses->setMinimumHeight(108);
-        topProcesses->setMaximumHeight(132);
+        topProcesses->setMinimumHeight(164);
+        topProcesses->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        topProcesses->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         processLayout->addWidget(processTitle);
-        processLayout->addWidget(topProcesses);
-        root->addWidget(processPanel);
+        processLayout->addWidget(topProcesses, 1);
+        lowerLayout->addWidget(processPanel, 5);
 
         log = new QTextEdit();
         log->setObjectName("log");
         log->setReadOnly(true);
-        log->setMinimumHeight(150);
-        root->addWidget(log);
+        log->setMinimumHeight(164);
+        log->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        log->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        lowerLayout->addWidget(log, 6);
+        root->addLayout(lowerLayout, 1);
 
         timer.setInterval(2000);
         connect(&timer, &QTimer::timeout, this, [this] { sample(); });
@@ -435,7 +464,7 @@ public:
             showDailyReportDialog();
         });
         connect(updateButton, &QPushButton::clicked, this, [this] {
-            checkForUpdates();
+            checkForUpdates(false);
         });
         connect(themeMode, &QComboBox::currentIndexChanged, this, [this] {
             applyStyle();
@@ -454,6 +483,9 @@ public:
                       ? ko("이전에 하루 동안 학습한 자동 정리 기준을 적용합니다.")
                       : ko("하루 학습 데이터가 아직 없어 PC 사양 기준으로 보호합니다."));
         sample();
+        QTimer::singleShot(1200, this, [this] {
+            checkForUpdates(true);
+        });
     }
 
 protected:
@@ -497,6 +529,7 @@ protected:
 private:
     QLabel *title = nullptr;
     QLabel *subtitle = nullptr;
+    QLabel *creatorLabel = nullptr;
     QLabel *statusPill = nullptr;
     QLabel *ramPercent = nullptr;
     QLabel *qiScore = nullptr;
@@ -539,18 +572,24 @@ private:
     bool quitRequested = false;
     bool trayNoticeShown = false;
     bool startedInBackground = false;
+    bool startupUpdateChecked = false;
 
     QWidget *makeMetric(const QString &labelText, QLabel *value) {
         auto *box = new QWidget();
+        box->setMinimumHeight(72);
         auto *layout = new QVBoxLayout(box);
         layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(4);
+        layout->setSpacing(2);
 
         auto *label = new QLabel(labelText);
         label->setObjectName("metricLabel");
+        label->setMinimumHeight(18);
         value->setObjectName("metricValue");
+        value->setMinimumHeight(42);
+        value->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         layout->addWidget(label);
         layout->addWidget(value);
+        layout->addStretch(1);
         return box;
     }
 
@@ -570,6 +609,43 @@ private:
 
     QString todayProcessCsvPath() const {
         return reportDir() + "/" + reportDate.toString("yyyy-MM-dd") + "-processes.csv";
+    }
+
+    bool fetchUrl(const QUrl &url, QByteArray *payload, QString *errorText) {
+        if (!url.isValid() || url.scheme().isEmpty()) {
+            if (errorText) {
+                *errorText = ko("주소 형식이 올바르지 않습니다.");
+            }
+            return false;
+        }
+
+        QNetworkAccessManager manager;
+        QNetworkRequest request(url);
+        request.setHeader(QNetworkRequest::UserAgentHeader,
+                          QString("MemoryGuardian/%1").arg(APP_VERSION));
+        QNetworkReply *reply = manager.get(request);
+
+        QEventLoop loop;
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        connect(&timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
+        timeout.start(15000);
+        loop.exec();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            if (errorText) {
+                *errorText = reply->errorString();
+            }
+            reply->deleteLater();
+            return false;
+        }
+
+        if (payload) {
+            *payload = reply->readAll();
+        }
+        reply->deleteLater();
+        return true;
     }
 
     void toggle() {
@@ -1095,7 +1171,30 @@ private:
         dialog->deleteLater();
     }
 
-    void checkForUpdates() {
+    void showStartupUpdateStatus(const QString &message, int closeAfterMs = 3500) {
+        auto *box = new QMessageBox(QMessageBox::Information,
+                                    ko("업데이트 상태"),
+                                    message,
+                                    QMessageBox::NoButton,
+                                    this);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->addButton(ko("확인"), QMessageBox::AcceptRole);
+        box->setModal(false);
+        box->show();
+        if (closeAfterMs > 0) {
+            QTimer::singleShot(closeAfterMs, box, &QMessageBox::accept);
+        }
+    }
+
+    void checkForUpdates(bool startupCheck) {
+        if (startupCheck) {
+            if (startupUpdateChecked) {
+                return;
+            }
+            startupUpdateChecked = true;
+            appendLog(ko("시작 시 업데이트 상태를 확인합니다."));
+        }
+
         QByteArray payload;
         QString manifestSource;
         QString localManifest = QCoreApplication::applicationDirPath() + "/update.json";
@@ -1108,63 +1207,65 @@ private:
             QSettings settings(reportDir() + "/profile.ini", QSettings::IniFormat);
             QString url = settings.value("updateUrl").toString();
             if (url.isEmpty()) {
-                QMessageBox::information(this,
-                                         ko("업데이트 확인"),
-                                         ko("업데이트 서버가 아직 설정되지 않았습니다.\n설치 폴더의 update.json 또는 profile.ini의 updateUrl을 사용합니다."));
+                if (startupCheck) {
+                    showStartupUpdateStatus(ko("업데이트 정보를 읽을 수 없습니다.\n설치 폴더의 update.json이 필요합니다."));
+                } else {
+                    QMessageBox::information(this,
+                                             ko("업데이트 확인"),
+                                             ko("업데이트 서버가 아직 설정되지 않았습니다.\n설치 폴더의 update.json 또는 profile.ini의 updateUrl을 사용합니다."));
+                }
                 appendLog(ko("업데이트 확인: 업데이트 서버가 설정되지 않았습니다."));
                 return;
             }
 
-            QNetworkAccessManager manager;
-            QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(url)));
-            QEventLoop loop;
-            connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-            QTimer::singleShot(10000, &loop, &QEventLoop::quit);
-            loop.exec();
-
-            if (reply->error() != QNetworkReply::NoError) {
-                QMessageBox::warning(this, ko("업데이트 확인"), ko("업데이트 정보를 가져오지 못했습니다."));
-                appendLog(ko("업데이트 확인 실패: %1").arg(reply->errorString()));
-                reply->deleteLater();
+            QString fetchError;
+            if (!fetchUrl(QUrl(url), &payload, &fetchError)) {
+                if (startupCheck) {
+                    showStartupUpdateStatus(ko("업데이트 상태를 확인하지 못했습니다.\n%1").arg(fetchError));
+                } else {
+                    QMessageBox::warning(this, ko("업데이트 확인"), ko("업데이트 정보를 가져오지 못했습니다."));
+                }
+                appendLog(ko("업데이트 확인 실패: %1").arg(fetchError));
                 return;
             }
 
-            payload = reply->readAll();
             manifestSource = url;
-            reply->deleteLater();
         }
 
         QJsonParseError error {};
         QJsonDocument document = QJsonDocument::fromJson(payload, &error);
         if (error.error != QJsonParseError::NoError || !document.isObject()) {
-            QMessageBox::warning(this, ko("업데이트 확인"), ko("업데이트 정보 형식이 올바르지 않습니다."));
+            if (startupCheck) {
+                showStartupUpdateStatus(ko("업데이트 정보 형식이 올바르지 않습니다."));
+            } else {
+                QMessageBox::warning(this, ko("업데이트 확인"), ko("업데이트 정보 형식이 올바르지 않습니다."));
+            }
             return;
         }
 
         QJsonObject object = document.object();
         QString remoteManifestUrl = object.value("updateUrl").toString();
         if (!remoteManifestUrl.isEmpty()) {
-            QNetworkAccessManager manager;
-            QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(remoteManifestUrl)));
-            QEventLoop loop;
-            connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-            QTimer::singleShot(10000, &loop, &QEventLoop::quit);
-            loop.exec();
-
-            if (reply->error() != QNetworkReply::NoError) {
-                QMessageBox::warning(this, ko("업데이트 확인"), ko("GitHub 업데이트 정보를 가져오지 못했습니다."));
-                appendLog(ko("GitHub 업데이트 확인 실패: %1").arg(reply->errorString()));
-                reply->deleteLater();
+            QString fetchError;
+            if (!fetchUrl(QUrl(remoteManifestUrl), &payload, &fetchError)) {
+                if (startupCheck) {
+                    showStartupUpdateStatus(ko("GitHub 업데이트 정보를 가져오지 못했습니다.\n%1").arg(fetchError));
+                } else {
+                    QMessageBox::warning(this, ko("업데이트 확인"), ko("GitHub 업데이트 정보를 가져오지 못했습니다."));
+                }
+                appendLog(ko("GitHub 업데이트 확인 실패: %1").arg(fetchError));
                 return;
             }
 
-            payload = reply->readAll();
             manifestSource = remoteManifestUrl;
-            reply->deleteLater();
 
             document = QJsonDocument::fromJson(payload, &error);
             if (error.error != QJsonParseError::NoError || !document.isObject()) {
-                QMessageBox::warning(this, ko("업데이트 확인"), ko("GitHub 업데이트 정보 형식이 올바르지 않습니다."));
+                if (startupCheck) {
+                    showStartupUpdateStatus(ko("GitHub 업데이트 정보 형식이 올바르지 않습니다."));
+                } else {
+                    QMessageBox::warning(this, ko("업데이트 확인"), ko("GitHub 업데이트 정보 형식이 올바르지 않습니다."));
+                }
                 return;
             }
             object = document.object();
@@ -1177,14 +1278,22 @@ private:
         QString notes = object.value("notes").toString();
 
         if (latest.isEmpty()) {
-            QMessageBox::warning(this, ko("업데이트 확인"), ko("업데이트 정보에 버전이 없습니다."));
+            if (startupCheck) {
+                showStartupUpdateStatus(ko("업데이트 정보에 버전이 없습니다."));
+            } else {
+                QMessageBox::warning(this, ko("업데이트 확인"), ko("업데이트 정보에 버전이 없습니다."));
+            }
             return;
         }
 
         if (compareVersions(QString::fromUtf8(APP_VERSION), latest) >= 0) {
-            QMessageBox::information(this,
-                                     ko("업데이트 확인"),
-                                     ko("현재 최신 버전을 사용 중입니다.\n현재 버전: %1").arg(APP_VERSION));
+            if (startupCheck) {
+                showStartupUpdateStatus(ko("업데이트 상태: 최신 버전입니다.\n현재 버전: %1").arg(APP_VERSION), 2500);
+            } else {
+                QMessageBox::information(this,
+                                         ko("업데이트 확인"),
+                                         ko("현재 최신 버전을 사용 중입니다.\n현재 버전: %1").arg(APP_VERSION));
+            }
             appendLog(ko("업데이트 확인: 최신 버전입니다."));
             return;
         }
@@ -1200,18 +1309,117 @@ private:
         QString message = ko("새 버전이 있습니다.\n\n현재 버전: %1\n새 버전: %2\n\n%3\n\n%4")
                               .arg(APP_VERSION, latest, notes, verifyText);
         QMessageBox box(this);
-        box.setWindowTitle(ko("업데이트 확인"));
+        box.setWindowTitle(startupCheck ? ko("업데이트 상태") : ko("업데이트 확인"));
         box.setText(message);
-        QPushButton *openButton = box.addButton(ko("다운로드 열기"), QMessageBox::AcceptRole);
+        QPushButton *installButton = box.addButton(ko("다운로드 후 설치"), QMessageBox::AcceptRole);
+        QPushButton *openButton = box.addButton(ko("브라우저로 열기"), QMessageBox::ActionRole);
         box.addButton(ko("나중에"), QMessageBox::RejectRole);
         box.exec();
 
         appendLog(checksumLooksValid
                       ? ko("업데이트 발견: %1, SHA-256 검증 정보 포함, 출처: %2").arg(latest, manifestSource)
                       : ko("업데이트 발견: %1, 검증 해시 없음, 출처: %2").arg(latest, manifestSource));
-        if (box.clickedButton() == openButton && !downloadUrl.isEmpty()) {
+        if (box.clickedButton() == installButton) {
+            downloadAndInstallUpdate(downloadUrl, sha256, latest);
+        } else if (box.clickedButton() == openButton && !downloadUrl.isEmpty()) {
             QDesktopServices::openUrl(QUrl(downloadUrl));
         }
+    }
+
+    void downloadAndInstallUpdate(const QString &downloadUrl, const QString &expectedSha256, const QString &latestVersion) {
+        QUrl url(downloadUrl);
+        if (!url.isValid() || downloadUrl.isEmpty()) {
+            QMessageBox::warning(this, ko("업데이트 설치"), ko("다운로드 주소가 올바르지 않습니다."));
+            return;
+        }
+
+        QNetworkAccessManager manager;
+        QNetworkRequest request(url);
+        request.setHeader(QNetworkRequest::UserAgentHeader,
+                          QString("MemoryGuardian/%1").arg(APP_VERSION));
+        QNetworkReply *reply = manager.get(request);
+
+        QProgressDialog progress(ko("업데이트 설치 파일을 다운로드하는 중입니다."),
+                                 ko("취소"),
+                                 0,
+                                 100,
+                                 this);
+        progress.setWindowTitle(ko("업데이트 설치"));
+        progress.setWindowModality(Qt::WindowModal);
+        progress.setMinimumDuration(0);
+
+        connect(reply, &QNetworkReply::downloadProgress, this, [&progress](qint64 received, qint64 total) {
+            if (total > 0) {
+                progress.setValue(int(received * 100 / total));
+            }
+        });
+        connect(&progress, &QProgressDialog::canceled, reply, &QNetworkReply::abort);
+
+        QEventLoop loop;
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+
+        if (reply->error() != QNetworkReply::NoError) {
+            QString reason = reply->errorString();
+            reply->deleteLater();
+            QMessageBox::warning(this, ko("업데이트 설치"), ko("업데이트 다운로드에 실패했습니다.\n%1").arg(reason));
+            appendLog(ko("업데이트 다운로드 실패: %1").arg(reason));
+            return;
+        }
+
+        QByteArray installerData = reply->readAll();
+        reply->deleteLater();
+        progress.setValue(100);
+
+        QString actualSha256 = QString::fromLatin1(QCryptographicHash::hash(installerData, QCryptographicHash::Sha256).toHex()).toUpper();
+        if (expectedSha256.size() == 64 && actualSha256 != expectedSha256.toUpper()) {
+            QMessageBox::critical(this,
+                                  ko("업데이트 차단"),
+                                  ko("다운로드한 설치 파일의 SHA-256 값이 업데이트 정보와 다릅니다.\n\n설치가 차단되었습니다."));
+            appendLog(ko("업데이트 차단: SHA-256 불일치. 예상 %1, 실제 %2").arg(expectedSha256, actualSha256));
+            return;
+        }
+
+        QString tempPath = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+        if (tempPath.isEmpty()) {
+            tempPath = QDir::tempPath();
+        }
+        QDir().mkpath(tempPath);
+        QString installerPath = tempPath + QString("/MemoryGuardianSetup-%1.exe").arg(latestVersion);
+
+        QFile installerFile(installerPath);
+        if (!installerFile.open(QIODevice::WriteOnly)) {
+            QMessageBox::warning(this, ko("업데이트 설치"), ko("설치 파일을 임시 폴더에 저장하지 못했습니다."));
+            appendLog(ko("업데이트 설치 파일 저장 실패: %1").arg(installerPath));
+            return;
+        }
+        installerFile.write(installerData);
+        installerFile.close();
+
+        appendLog(expectedSha256.size() == 64
+                      ? ko("업데이트 파일 검증 완료: SHA-256 일치")
+                      : ko("업데이트 파일 다운로드 완료: 검증 해시가 없어 수동 확인이 필요합니다."));
+
+        QMessageBox::information(this,
+                                 ko("업데이트 설치"),
+                                 ko("설치 파일 검증이 끝났습니다.\n이제 관리자 권한 설치 창이 열립니다.\n설치를 계속하려면 Windows 권한 요청에서 예를 누르세요."));
+
+        HINSTANCE result = ShellExecuteW(nullptr,
+                                         L"runas",
+                                         reinterpret_cast<LPCWSTR>(installerPath.utf16()),
+                                         nullptr,
+                                         nullptr,
+                                         SW_SHOWNORMAL);
+        if (reinterpret_cast<intptr_t>(result) <= 32) {
+            QMessageBox::warning(this, ko("업데이트 설치"), ko("설치 프로그램을 실행하지 못했습니다."));
+            appendLog(ko("업데이트 설치 프로그램 실행 실패"));
+            return;
+        }
+
+        appendLog(ko("업데이트 설치 프로그램을 관리자 권한으로 실행했습니다. 현재 앱을 종료합니다."));
+        quitRequested = true;
+        writeDailyReport();
+        qApp->quit();
     }
 
     void appendCsv(const MemorySnapshot &snapshot, const QiState &qi, int activeThreshold) {
@@ -1381,16 +1589,16 @@ private:
             }
             QLabel#metricValue {
                 color: #f8fafc;
-                font-size: 34px;
+                font-size: 30px;
                 font-weight: 800;
             }
             QFrame#hero, QFrame#panel, QTextEdit#log {
                 background: #111827;
                 border: 1px solid #243244;
-                border-radius: 18px;
+                border-radius: 14px;
             }
             QLineEdit, QSpinBox, QComboBox {
-                min-height: 36px;
+                min-height: 34px;
                 background: #0b1220;
                 color: #e5e7eb;
                 border: 1px solid #334155;
@@ -1401,7 +1609,7 @@ private:
                 border: 1px solid #2563eb;
             }
             QProgressBar {
-                height: 18px;
+                height: 16px;
                 border: 0;
                 border-radius: 9px;
                 background: #243244;
@@ -1414,7 +1622,7 @@ private:
                 background: #f59e0b;
             }
             QPushButton {
-                min-height: 38px;
+                min-height: 36px;
                 background: #111827;
                 color: #e5e7eb;
                 border: 1px solid #334155;
@@ -1432,15 +1640,30 @@ private:
                 background: #1d4ed8;
             }
             QTextEdit#log {
-                padding: 14px;
+                padding: 12px;
                 color: #cbd5e1;
                 selection-background-color: #1e40af;
             }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #334155;
+                border-radius: 5px;
+                min-height: 28px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+                border: 0;
+            }
         )");
 
-            title->setStyleSheet("font-size: 28px; font-weight: 800; color: #f8fafc;");
+            title->setStyleSheet("font-size: 26px; font-weight: 800; color: #f8fafc;");
             subtitle->setStyleSheet("color: #94a3b8;");
-            statusPill->setStyleSheet("background: #172554; color: #bfdbfe; border-radius: 16px; padding: 8px 16px; font-weight: 700;");
+            creatorLabel->setStyleSheet("color: #60a5fa; font-size: 12px; font-weight: 700;");
+            statusPill->setStyleSheet("background: #172554; color: #bfdbfe; border-radius: 14px; padding: 8px 16px; font-weight: 700; min-width: 86px;");
             return;
         }
 
@@ -1461,16 +1684,16 @@ private:
             }
             QLabel#metricValue {
                 color: #111827;
-                font-size: 34px;
+                font-size: 30px;
                 font-weight: 800;
             }
             QFrame#hero, QFrame#panel, QTextEdit#log {
                 background: white;
                 border: 1px solid #dae1eb;
-                border-radius: 18px;
+                border-radius: 14px;
             }
             QLineEdit, QSpinBox, QComboBox {
-                min-height: 36px;
+                min-height: 34px;
                 background: white;
                 border: 1px solid #d7dee9;
                 border-radius: 9px;
@@ -1480,7 +1703,7 @@ private:
                 border: 1px solid #2563eb;
             }
             QProgressBar {
-                height: 18px;
+                height: 16px;
                 border: 0;
                 border-radius: 9px;
                 background: #e7ecf4;
@@ -1493,7 +1716,7 @@ private:
                 background: #f59e0b;
             }
             QPushButton {
-                min-height: 38px;
+                min-height: 36px;
                 background: white;
                 border: 1px solid #d7dee9;
                 border-radius: 10px;
@@ -1510,15 +1733,30 @@ private:
                 background: #1d4ed8;
             }
             QTextEdit#log {
-                padding: 14px;
+                padding: 12px;
                 color: #334155;
                 selection-background-color: #dbeafe;
             }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #cbd5e1;
+                border-radius: 5px;
+                min-height: 28px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+                border: 0;
+            }
         )");
 
-        title->setStyleSheet("font-size: 28px; font-weight: 800; color: #111827;");
+        title->setStyleSheet("font-size: 26px; font-weight: 800; color: #111827;");
         subtitle->setStyleSheet("color: #697486;");
-        statusPill->setStyleSheet("background: #e8f1ff; color: #1d4ed8; border-radius: 16px; padding: 8px 16px; font-weight: 700;");
+        creatorLabel->setStyleSheet("color: #2563eb; font-size: 12px; font-weight: 700;");
+        statusPill->setStyleSheet("background: #e8f1ff; color: #1d4ed8; border-radius: 14px; padding: 8px 16px; font-weight: 700; min-width: 86px;");
     }
 };
 
@@ -1549,3 +1787,4 @@ int main(int argc, char *argv[]) {
 
     return app.exec();
 }
+

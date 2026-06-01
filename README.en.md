@@ -43,7 +43,8 @@ If you redistribute the original project, a modified version, or a package that 
 
 ```text
 Memory Guardian
-Copyright (c) 2026 haimez-kor
+Made by HAIMEZ
+Copyright (c) 2026 HAIMEZ
 Licensed under the MIT License.
 Original project: https://github.com/haimez-kor/memory-guardian
 ```

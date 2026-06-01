@@ -1,6 +1,6 @@
-#define AppName "Memory Guardian"
-#define AppVersion "1.1.5"
-#define AppPublisher "haimez-kor"
+﻿#define AppName "Memory Guardian"
+#define AppVersion "1.1.7"
+#define AppPublisher "HAIMEZ"
 #define AppURL "https://github.com/haimez-kor/memory-guardian"
 
 [Setup]
@@ -36,7 +36,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startup"; Description: "Start Memory Guardian in the background when Windows starts"; GroupDescription: "Startup"
 
 [Files]
-Source: "..\dist-app-v1.1.5\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist-app-v1.1.7\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Memory Guardian"; Filename: "{app}\MemoryGuardian.exe"; WorkingDir: "{app}"
@@ -49,3 +49,4 @@ Filename: "{app}\MemoryGuardian.exe"; Description: "Launch Memory Guardian"; Fla
 
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Memory Guardian Background Protection"""; Flags: runhidden; RunOnceId: "RemoveStartupTask"
+

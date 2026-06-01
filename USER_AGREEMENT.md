@@ -14,7 +14,8 @@
 
 ```text
 Memory Guardian
-Copyright (c) 2026 haimez-kor
+HAIMEZ 제작
+Copyright (c) 2026 HAIMEZ
 Licensed under the MIT License.
 Original project: https://github.com/haimez-kor/memory-guardian
 ```

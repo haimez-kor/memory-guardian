@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal
 
 set PATH=C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
@@ -6,7 +6,7 @@ set PATH=C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
 call build.bat
 if errorlevel 1 exit /b 1
 
-set DIST=dist-app-v1.1.5
+set DIST=dist-app-v1.1.7
 if exist "%DIST%" rmdir /S /Q "%DIST%"
 mkdir "%DIST%"
 
@@ -59,3 +59,4 @@ if errorlevel 1 exit /b 1
 
 echo Built MemoryGuardianSetup.exe with Inno Setup.
 endlocal
+
