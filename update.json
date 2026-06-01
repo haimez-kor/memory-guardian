@@ -1,8 +1,7 @@
 ﻿{
     "version":  "1.1.7",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "B3B3818ADEACB9A70CB60545A5AA94DC16C05B02926BA4585725794A05C60CF3",
+    "sha256":  "DB9EB3638050AE3153EF5098B46FFD464419AA8E21BFF2433FF35CF0EC9E3FD6",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
     "notes":  "Adds startup-only update status checks, safer in-app updating, SHA-256 verified installer downloads, memory leak trend tracking, process RAM growth, and 1-hour temporary learning."
 }
-
