@@ -1,7 +1,7 @@
 ﻿{
     "version":  "1.1.9",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "62A822C4BBA596AE006F754901921D7225D215203B41943E1A3CFDB31501647B",
+    "sha256":  "043CE79C3C77A8683E0042F15A0A7A4B0EF2B5519CBC0E59099AEB40437C2FE0",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
     "notes":  "Requests administrator permission on startup, prevents repeated cleanup spam when RAM does not drop, keeps reports/settings during updates, improves report UI spacing, and keeps SHA-256 verified automatic updates."
 }
