@@ -1,7 +1,7 @@
 ﻿{
   "version": "1.1.4",
   "downloadUrl": "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-  "sha256": "667F8AB7BA93007ACC3E717F37A3F1DF95198FBC1C482033B66E99AF5FB45C44",
+  "sha256": "BFC824266C5A2FDBD0DE31529DF11F87BE488A35D419E26C24C9316F95AA6F03",
   "checksumUrl": "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
   "notes": "한국어/영어 README와 사용자 계약서를 추가하고, Inno Setup 기반 고급 설치 패키징 구성을 추가했습니다."
 }

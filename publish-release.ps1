@@ -26,7 +26,7 @@ $notes = @"
 - Include open-source download and source-code guidance
 
 SHA-256:
-667F8AB7BA93007ACC3E717F37A3F1DF95198FBC1C482033B66E99AF5FB45C44
+BFC824266C5A2FDBD0DE31529DF11F87BE488A35D419E26C24C9316F95AA6F03
 "@
 
 $previousErrorActionPreference = $ErrorActionPreference
