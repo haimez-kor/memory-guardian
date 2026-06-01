@@ -5,7 +5,7 @@
 #include <psapi.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.1.2";
+static const char *APP_VERSION = "1.1.3";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -199,7 +199,7 @@ static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold)
 
 class GuardianWindow : public QWidget {
 public:
-    GuardianWindow() {
+    explicit GuardianWindow(bool backgroundStart = false) : startedInBackground(backgroundStart) {
         reportDate = QDate::currentDate();
         loadLearnedProfile();
         setWindowTitle(ko("메모리 자동 보호기"));
@@ -338,6 +338,7 @@ public:
         appendLog(ko("현재 버전: %1").arg(APP_VERSION));
         appendLog(ko("하루 동안 시간대별 RAM 사용량을 기록해 자동 정리 기준을 학습합니다."));
         appendLog(ko("닫기 버튼을 눌러도 창만 숨겨지고 보호는 백그라운드에서 계속됩니다."));
+        appendLog(ko("PC를 켤 때 자동으로 백그라운드 보호가 시작되도록 설치 프로그램이 등록합니다."));
         appendLog(learnedThreshold > 0
                       ? ko("이전에 하루 동안 학습한 자동 정리 기준을 적용합니다.")
                       : ko("하루 학습 데이터가 아직 없어 PC 사양 기준으로 보호합니다."));
@@ -421,6 +422,7 @@ private:
     DWORD peakLoad = 0;
     bool quitRequested = false;
     bool trayNoticeShown = false;
+    bool startedInBackground = false;
 
     QWidget *makeMetric(const QString &labelText, QLabel *value) {
         auto *box = new QWidget();
@@ -520,10 +522,14 @@ private:
 
     void hideToTray() {
         hide();
-        appendLog(ko("창을 숨겼습니다. 보호 기능은 백그라운드에서 계속 실행됩니다."));
+        appendLog(startedInBackground
+                      ? ko("자동 시작으로 백그라운드 보호를 실행했습니다.")
+                      : ko("창을 숨겼습니다. 보호 기능은 백그라운드에서 계속 실행됩니다."));
         if (trayIcon && !trayNoticeShown) {
             trayIcon->showMessage(ko("백그라운드 보호 중"),
-                                  ko("창만 닫혔고 메모리 보호는 계속 실행됩니다."),
+                                  startedInBackground
+                                      ? ko("PC 시작과 함께 메모리 보호가 자동 실행되었습니다.")
+                                      : ko("창만 닫혔고 메모리 보호는 계속 실행됩니다."),
                                   QSystemTrayIcon::Information,
                                   3500);
             trayNoticeShown = true;
@@ -1120,8 +1126,25 @@ int main(int argc, char *argv[]) {
     QApplication::setStyle("Fusion");
     QApplication::setQuitOnLastWindowClosed(false);
 
-    GuardianWindow window;
-    window.show();
+    bool backgroundStart = QCoreApplication::arguments().contains("--background");
+
+    GuardianWindow window(backgroundStart);
+    if (backgroundStart) {
+        QTimer::singleShot(0, &window, [&window] { window.hide(); });
+    } else {
+        window.show();
+        QTimer::singleShot(600, &window, [&window] {
+            QSettings settings(QCoreApplication::applicationDirPath() + "/reports/profile.ini", QSettings::IniFormat);
+            if (settings.value("permissionNoticeShown", false).toBool()) {
+                return;
+            }
+            QMessageBox::information(&window,
+                                     ko("자동 보호 안내"),
+                                     ko("메모리 자동 보호기는 PC를 켤 때 백그라운드에서 자동으로 시작되도록 등록됩니다.\n\nWindows가 관리자 권한 허용 창을 보여주면 '예'를 눌러야 메모리 정리 기능이 제대로 작동합니다."));
+            settings.setValue("permissionNoticeShown", true);
+            settings.sync();
+        });
+    }
 
     return app.exec();
 }

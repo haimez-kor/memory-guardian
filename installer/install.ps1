@@ -38,6 +38,7 @@ Copy-Item (Join-Path $extractDir "*") $installDir -Recurse -Force
 
 $exe = Join-Path $installDir "MemoryGuardian.exe"
 $shell = New-Object -ComObject WScript.Shell
+$taskName = "Memory Guardian Background Protection"
 
 $desktopShortcut = Join-Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) "메모리 자동 보호기.lnk"
 $shortcut = $shell.CreateShortcut($desktopShortcut)
@@ -55,6 +56,12 @@ $shortcut.WorkingDirectory = $installDir
 $shortcut.IconLocation = $exe
 $shortcut.Save()
 
+$action = New-ScheduledTaskAction -Execute $exe -Argument "--background" -WorkingDirectory $installDir
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DisallowStartIfOnBatteries:$false
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+
 $uninstall = @'
 param([switch]$Elevated)
 
@@ -70,6 +77,8 @@ if (-not (Test-Admin)) {
 }
 
 $installDir = Join-Path $env:ProgramFiles "Memory Guardian"
+$taskName = "Memory Guardian Background Protection"
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) "메모리 자동 보호기.lnk") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath("CommonPrograms")) "Memory Guardian") -Recurse -Force -ErrorAction SilentlyContinue
 Start-Process cmd -WindowStyle Hidden -ArgumentList "/c timeout /t 2 >nul & rmdir /s /q `"$installDir`""
@@ -78,4 +87,6 @@ Start-Process cmd -WindowStyle Hidden -ArgumentList "/c timeout /t 2 >nul & rmdi
 Set-Content -Path (Join-Path $installDir "uninstall.ps1") -Value $uninstall -Encoding UTF8
 
 Write-Host "설치가 완료되었습니다: $installDir"
+Write-Host "PC를 켤 때 자동으로 백그라운드 보호가 시작되도록 등록했습니다."
+Write-Host "Windows가 관리자 권한 허용 창을 보여주면 '예'를 눌러주세요."
 Start-Process $exe
