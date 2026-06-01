@@ -3,9 +3,10 @@
 #include <algorithm>
 #include <windows.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.1.4";
+static const char *APP_VERSION = "1.1.5";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -42,6 +43,12 @@ struct MemorySnapshot {
     quint64 totalMb = 0;
     quint64 usedMb = 0;
     quint64 availableMb = 0;
+    quint64 commitMb = 0;
+    quint64 commitLimitMb = 0;
+    quint64 pageFileUsedMb = 0;
+    quint64 pageFileTotalMb = 0;
+    quint64 nonPagedPoolMb = 0;
+    quint64 pagedPoolMb = 0;
 };
 
 struct QiState {
@@ -57,6 +64,21 @@ struct HourStats {
     quint64 usedSum = 0;
     DWORD peakLoad = 0;
     quint64 peakUsedMb = 0;
+};
+
+struct ProcessUsage {
+    QString name;
+    DWORD pid = 0;
+    quint64 usedMb = 0;
+};
+
+struct ProcessTrend {
+    QString name;
+    DWORD pid = 0;
+    quint64 firstMb = 0;
+    quint64 lastMb = 0;
+    QDateTime firstSeen;
+    QDateTime lastSeen;
 };
 
 class HourChartWidget : public QWidget {
@@ -132,7 +154,64 @@ static MemorySnapshot readMemory() {
     snapshot.totalMb = memory.ullTotalPhys / (1024ULL * 1024ULL);
     snapshot.availableMb = memory.ullAvailPhys / (1024ULL * 1024ULL);
     snapshot.usedMb = snapshot.totalMb - snapshot.availableMb;
+    snapshot.pageFileTotalMb = memory.ullTotalPageFile / (1024ULL * 1024ULL);
+    snapshot.pageFileUsedMb = (memory.ullTotalPageFile - memory.ullAvailPageFile) / (1024ULL * 1024ULL);
+
+    PERFORMANCE_INFORMATION perf {};
+    perf.cb = sizeof(perf);
+    if (GetPerformanceInfo(&perf, sizeof(perf))) {
+        snapshot.commitMb = quint64(perf.CommitTotal) * perf.PageSize / (1024ULL * 1024ULL);
+        snapshot.commitLimitMb = quint64(perf.CommitLimit) * perf.PageSize / (1024ULL * 1024ULL);
+        snapshot.nonPagedPoolMb = quint64(perf.KernelNonpaged) * perf.PageSize / (1024ULL * 1024ULL);
+        snapshot.pagedPoolMb = quint64(perf.KernelPaged) * perf.PageSize / (1024ULL * 1024ULL);
+    }
     return snapshot;
+}
+
+static QVector<ProcessUsage> readTopProcesses(int limit = 5) {
+    QVector<ProcessUsage> results;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return results;
+    }
+
+    PROCESSENTRY32W entry {};
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        CloseHandle(snapshot);
+        return results;
+    }
+
+    do {
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, entry.th32ProcessID);
+        if (!process) {
+            continue;
+        }
+
+        PROCESS_MEMORY_COUNTERS_EX counters {};
+        if (GetProcessMemoryInfo(process,
+                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&counters),
+                                 sizeof(counters))) {
+            quint64 mb = counters.WorkingSetSize / (1024ULL * 1024ULL);
+            if (mb > 0) {
+                ProcessUsage usage;
+                usage.name = QString::fromWCharArray(entry.szExeFile);
+                usage.pid = entry.th32ProcessID;
+                usage.usedMb = mb;
+                results.push_back(usage);
+            }
+        }
+        CloseHandle(process);
+    } while (Process32NextW(snapshot, &entry));
+
+    CloseHandle(snapshot);
+    std::sort(results.begin(), results.end(), [](const ProcessUsage &a, const ProcessUsage &b) {
+        return a.usedMb > b.usedMb;
+    });
+    while (results.size() > limit) {
+        results.pop_back();
+    }
+    return results;
 }
 
 static bool purgeMemoryList(ULONG command) {
@@ -203,7 +282,7 @@ public:
         reportDate = QDate::currentDate();
         loadLearnedProfile();
         setWindowTitle(ko("메모리 자동 보호기"));
-        setMinimumSize(940, 700);
+        setMinimumSize(980, 800);
 
         auto *root = new QVBoxLayout(this);
         root->setContentsMargins(28, 26, 28, 26);
@@ -231,10 +310,10 @@ public:
 
         auto *metrics = new QHBoxLayout();
         ramPercent = new QLabel("0%");
-        qiScore = new QLabel("QI 100");
+        qiScore = new QLabel(ko("100점"));
         adaptiveValue = new QLabel("80%");
         metrics->addWidget(makeMetric(ko("현재 RAM 사용률"), ramPercent), 1);
-        metrics->addWidget(makeMetric(ko("상태 점수"), qiScore), 1);
+        metrics->addWidget(makeMetric(ko("최적화 점수"), qiScore), 1);
         metrics->addWidget(makeMetric(ko("자동 정리 기준"), adaptiveValue), 1);
         heroLayout->addLayout(metrics);
 
@@ -245,6 +324,9 @@ public:
 
         summary = new QLabel(ko("메모리 상태를 확인하는 중입니다."));
         heroLayout->addWidget(summary);
+        systemDetail = new QLabel(ko("커밋 메모리와 페이지 파일 상태를 확인하는 중입니다."));
+        systemDetail->setObjectName("metricLabel");
+        heroLayout->addWidget(systemDetail);
         root->addWidget(hero);
 
         auto *controls = new QFrame();
@@ -254,17 +336,21 @@ public:
         controlLayout->setHorizontalSpacing(14);
         controlLayout->setVerticalSpacing(8);
 
-        autoTune = new QCheckBox(ko("하루 학습 후 PC 맞춤 기준 사용"));
+        autoTune = new QCheckBox(ko("1시간 임시 학습 + 하루 정식 학습 기준 사용"));
         autoTune->setChecked(true);
 
         threshold = new QSpinBox();
         threshold->setRange(50, 98);
-        threshold->setValue(80);
+        threshold->setValue(74);
         threshold->setSuffix("%");
         threshold->setEnabled(false);
 
         action = new QComboBox();
         action->addItems({ko("자동 정리"), ko("알림만")});
+
+        usageMode = new QComboBox();
+        usageMode->addItems({ko("일반 PC"), ko("서버/개발")});
+        usageMode->setCurrentIndex(1);
 
         themeMode = new QComboBox();
         themeMode->addItems({ko("시스템 설정"), ko("라이트 모드"), ko("다크 모드")});
@@ -278,13 +364,11 @@ public:
         controlLayout->addWidget(autoTune, 0, 0, 1, 2);
         controlLayout->addWidget(new QLabel(ko("기준값")), 1, 0);
         controlLayout->addWidget(new QLabel(ko("자동 처리")), 1, 1);
-        controlLayout->addWidget(new QLabel(ko("고급: 프로그램 번호")), 1, 2);
+        controlLayout->addWidget(new QLabel(ko("사용 모드")), 1, 2);
         controlLayout->addWidget(new QLabel(ko("화면 모드")), 1, 3);
         controlLayout->addWidget(threshold, 2, 0);
         controlLayout->addWidget(action, 2, 1);
-        processId = new QLineEdit();
-        processId->setPlaceholderText(ko("비워두면 전체 RAM 보호"));
-        controlLayout->addWidget(processId, 2, 2);
+        controlLayout->addWidget(usageMode, 2, 2);
         controlLayout->addWidget(themeMode, 2, 3);
         controlLayout->addWidget(startButton, 2, 4);
         controlLayout->addWidget(reportButton, 2, 5);
@@ -300,12 +384,30 @@ public:
         todayAverage = new QLabel(ko("오늘 평균: -"));
         todayPeak = new QLabel(ko("오늘 최고: -"));
         busyHour = new QLabel(ko("가장 무거운 시간: -"));
+        leakStatus = new QLabel(ko("누수 의심: 확인 중"));
         optimizeCountLabel = new QLabel(ko("자동 정리: 0회"));
         reportLayout->addWidget(todayAverage, 1);
         reportLayout->addWidget(todayPeak, 1);
         reportLayout->addWidget(busyHour, 1);
+        reportLayout->addWidget(leakStatus, 1);
         reportLayout->addWidget(optimizeCountLabel, 1);
         root->addWidget(reportPanel);
+
+        auto *processPanel = new QFrame();
+        processPanel->setObjectName("panel");
+        auto *processLayout = new QVBoxLayout(processPanel);
+        processLayout->setContentsMargins(22, 16, 22, 16);
+        processLayout->setSpacing(8);
+        auto *processTitle = new QLabel(ko("RAM 사용 상위 프로그램 / 오늘 증가량"));
+        processTitle->setObjectName("metricLabel");
+        topProcesses = new QTextEdit();
+        topProcesses->setObjectName("log");
+        topProcesses->setReadOnly(true);
+        topProcesses->setMinimumHeight(108);
+        topProcesses->setMaximumHeight(132);
+        processLayout->addWidget(processTitle);
+        processLayout->addWidget(topProcesses);
+        root->addWidget(processPanel);
 
         log = new QTextEdit();
         log->setObjectName("log");
@@ -319,6 +421,14 @@ public:
         connect(autoTune, &QCheckBox::toggled, this, [this](bool checked) {
             threshold->setEnabled(!checked);
             appendLog(checked ? ko("PC 맞춤 자동 기준을 사용합니다.") : ko("수동 정리 기준을 사용합니다."));
+        });
+        connect(usageMode, &QComboBox::currentIndexChanged, this, [this] {
+            appendLog(usageMode->currentIndex() == 1
+                          ? ko("서버/개발 모드: 자동 정리 기준을 더 보수적으로 잡습니다.")
+                          : ko("일반 PC 모드: 기본 정리 기준을 사용합니다."));
+            if (!autoTune->isChecked()) {
+                threshold->setValue(usageMode->currentIndex() == 1 ? 74 : 80);
+            }
         });
         connect(reportButton, &QPushButton::clicked, this, [this] {
             writeDailyReport();
@@ -336,7 +446,8 @@ public:
         timer.start();
         appendLog(ko("전체 RAM 자동 보호를 시작했습니다."));
         appendLog(ko("현재 버전: %1").arg(APP_VERSION));
-        appendLog(ko("하루 동안 시간대별 RAM 사용량을 기록해 자동 정리 기준을 학습합니다."));
+        appendLog(ko("1시간 임시 학습 후 빠르게 기준을 보정하고, 하루 기록으로 정식 기준을 저장합니다."));
+        appendLog(ko("다른 프로그램을 강제로 종료하지 않고 RAM 정리와 상태 감시만 수행합니다."));
         appendLog(ko("닫기 버튼을 눌러도 창만 숨겨지고 보호는 백그라운드에서 계속됩니다."));
         appendLog(ko("PC를 켤 때 자동으로 백그라운드 보호가 시작되도록 설치 프로그램이 등록합니다."));
         appendLog(learnedThreshold > 0
@@ -391,27 +502,32 @@ private:
     QLabel *qiScore = nullptr;
     QLabel *adaptiveValue = nullptr;
     QLabel *summary = nullptr;
+    QLabel *systemDetail = nullptr;
     QLabel *todayAverage = nullptr;
     QLabel *todayPeak = nullptr;
     QLabel *busyHour = nullptr;
+    QLabel *leakStatus = nullptr;
     QLabel *optimizeCountLabel = nullptr;
     QProgressBar *meter = nullptr;
     QCheckBox *autoTune = nullptr;
     QSpinBox *threshold = nullptr;
     QComboBox *action = nullptr;
+    QComboBox *usageMode = nullptr;
     QComboBox *themeMode = nullptr;
-    QLineEdit *processId = nullptr;
     QPushButton *startButton = nullptr;
     QPushButton *reportButton = nullptr;
     QPushButton *updateButton = nullptr;
+    QTextEdit *topProcesses = nullptr;
     QTextEdit *log = nullptr;
     QSystemTrayIcon *trayIcon = nullptr;
     QMenu *trayMenu = nullptr;
     QTimer timer;
     QVector<MemorySnapshot> samples;
+    QHash<QString, ProcessTrend> processTrends;
     HourStats hours[24];
     QDate reportDate;
     qint64 lastOptimizeMs = 0;
+    qint64 lastProcessCsvMs = 0;
     bool running = true;
     int adaptiveThreshold = 80;
     int learnedThreshold = 0;
@@ -450,6 +566,10 @@ private:
 
     QString todayCsvPath() const {
         return reportDir() + "/" + reportDate.toString("yyyy-MM-dd") + "-samples.csv";
+    }
+
+    QString todayProcessCsvPath() const {
+        return reportDir() + "/" + reportDate.toString("yyyy-MM-dd") + "-processes.csv";
     }
 
     void toggle() {
@@ -564,14 +684,18 @@ private:
         }
 
         QiState qi = evaluateQi(samples, activeThreshold);
+        QVector<ProcessUsage> processes = readTopProcesses(20);
+        updateProcessTrends(processes, snapshot.time);
         updateUi(snapshot, qi, activeThreshold);
+        updateTopProcesses(processes);
         appendCsv(snapshot, qi, activeThreshold);
+        appendProcessCsv(processes, snapshot.time);
 
         qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (qi.shouldOptimize && now - lastOptimizeMs > 15000) {
             lastOptimizeMs = now;
             optimizeCount++;
-            appendLog(ko("QI 점수가 낮거나 RAM 사용률이 기준을 넘어 자동 처리를 시작합니다."));
+            appendLog(ko("최적화 점수가 낮거나 RAM 사용률이 기준을 넘어 자동 처리를 시작합니다."));
             if (action->currentIndex() == 0) {
                 appendLog(optimizeMemory());
             } else {
@@ -591,6 +715,8 @@ private:
         totalSampleCount = 0;
         peakLoad = 0;
         samples.clear();
+        processTrends.clear();
+        lastProcessCsvMs = 0;
         appendLog(ko("새 날짜가 시작되어 오늘의 기록을 새로 시작합니다."));
     }
 
@@ -614,10 +740,27 @@ private:
             return learnedThreshold;
         }
 
+        int temporary = temporaryThresholdFromToday(totalMb);
+        if (temporary > 0) {
+            return temporary;
+        }
+
         return hardwareThreshold(totalMb);
     }
 
     int hardwareThreshold(quint64 totalMb) const {
+        bool serverMode = usageMode && usageMode->currentIndex() == 1;
+        if (serverMode) {
+            if (totalMb <= 8192) {
+                return 70;
+            } else if (totalMb <= 16384) {
+                return 74;
+            } else if (totalMb >= 32768) {
+                return 80;
+            }
+            return 76;
+        }
+
         if (totalMb <= 8192) {
             return 74;
         } else if (totalMb <= 16384) {
@@ -627,6 +770,18 @@ private:
         }
 
         return 82;
+    }
+
+    int temporaryThresholdFromToday(quint64 totalMb) const {
+        if (totalSampleCount < 1800) {
+            return 0;
+        }
+
+        int averageLoad = int(totalLoadSum / quint64(totalSampleCount));
+        int base = hardwareThreshold(totalMb);
+        int learned = std::clamp(averageLoad + (usageMode && usageMode->currentIndex() == 1 ? 8 : 12), 66, 90);
+        int blended = (base * 50 + learned * 50) / 100;
+        return std::clamp(blended, usageMode && usageMode->currentIndex() == 1 ? 66 : 70, 90);
     }
 
     int coveredHours() const {
@@ -646,9 +801,9 @@ private:
 
         int averageLoad = int(totalLoadSum / quint64(totalSampleCount));
         int hardwareBase = samples.isEmpty() ? 80 : hardwareThreshold(samples.last().totalMb);
-        int learnedBase = std::clamp(averageLoad + 16, 70, 92);
+        int learnedBase = std::clamp(averageLoad + (usageMode && usageMode->currentIndex() == 1 ? 10 : 16), 66, 92);
         int blended = (hardwareBase * 35 + learnedBase * 65) / 100;
-        return std::clamp(blended, 68, 92);
+        return std::clamp(blended, usageMode && usageMode->currentIndex() == 1 ? 66 : 68, 92);
     }
 
     void loadLearnedProfile() {
@@ -681,18 +836,39 @@ private:
 
     void updateUi(const MemorySnapshot &snapshot, const QiState &qi, int activeThreshold) {
         ramPercent->setText(QString("%1%").arg(snapshot.load));
-        qiScore->setText(QString("QI %1").arg(qi.score));
-        adaptiveValue->setText(autoTune->isChecked() && learnedThreshold == 0
-                                   ? ko("학습 중 %1%").arg(activeThreshold)
-                                   : QString("%1%").arg(activeThreshold));
+        qiScore->setText(ko("%1점").arg(qi.score));
+
+        QString thresholdText = QString("%1%").arg(activeThreshold);
+        if (autoTune->isChecked() && learnedThreshold == 0) {
+            thresholdText = totalSampleCount >= 1800
+                                ? ko("임시 %1%").arg(activeThreshold)
+                                : ko("학습 중 %1%").arg(activeThreshold);
+        }
+        adaptiveValue->setText(thresholdText);
         meter->setValue(int(snapshot.load));
-        summary->setText(ko("사용 중 %1 MB / 전체 %2 MB    여유 %3 MB")
+
+        qint64 cleanupLeftMb = qint64(snapshot.totalMb) * qint64(activeThreshold - int(snapshot.load)) / 100;
+        QString cleanupText = cleanupLeftMb > 0
+                                  ? ko("예상 정리까지 약 %1 MB").arg(cleanupLeftMb)
+                                  : ko("정리 기준 초과");
+        summary->setText(ko("사용 중 %1 MB / 전체 %2 MB    여유 %3 MB    %4")
                          .arg(snapshot.usedMb)
                          .arg(snapshot.totalMb)
-                         .arg(snapshot.availableMb));
+                         .arg(snapshot.availableMb)
+                         .arg(cleanupText));
+        systemDetail->setText(ko("커밋 %1/%2 MB    페이지 파일 %3/%4 MB    Non-Paged Pool %5 MB    Paged Pool %6 MB")
+                              .arg(snapshot.commitMb)
+                              .arg(snapshot.commitLimitMb)
+                              .arg(snapshot.pageFileUsedMb)
+                              .arg(snapshot.pageFileTotalMb)
+                              .arg(snapshot.nonPagedPoolMb)
+                              .arg(snapshot.pagedPoolMb));
 
         if (qi.score <= 45 || snapshot.load >= DWORD(activeThreshold)) {
             statusPill->setText(ko("정리 필요"));
+            meter->setProperty("state", "warn");
+        } else if (qi.score <= 70 || snapshot.load + 5 >= DWORD(activeThreshold)) {
+            statusPill->setText(ko("상태 보통"));
             meter->setProperty("state", "warn");
         } else {
             statusPill->setText(ko("상태 좋음"));
@@ -704,8 +880,109 @@ private:
         int averageLoad = totalSampleCount ? int(totalLoadSum / quint64(totalSampleCount)) : 0;
         todayAverage->setText(ko("오늘 평균: %1%").arg(averageLoad));
         todayPeak->setText(ko("오늘 최고: %1%").arg(peakLoad));
-        busyHour->setText(ko("학습된 시간: %1/24").arg(coveredHours()));
+        busyHour->setText(totalSampleCount >= 1800
+                              ? ko("임시 학습 완료")
+                              : ko("임시 학습: %1%").arg(std::min(99, totalSampleCount * 100 / 1800)));
+        leakStatus->setText(leakStatusText(snapshot));
         optimizeCountLabel->setText(ko("자동 정리: %1회").arg(optimizeCount));
+    }
+
+    void updateProcessTrends(const QVector<ProcessUsage> &processes, const QDateTime &now) {
+        for (const ProcessUsage &process : processes) {
+            QString key = QString("%1:%2").arg(process.name).arg(process.pid);
+            if (!processTrends.contains(key)) {
+                ProcessTrend trend;
+                trend.name = process.name;
+                trend.pid = process.pid;
+                trend.firstMb = process.usedMb;
+                trend.firstSeen = now;
+                processTrends.insert(key, trend);
+            }
+
+            ProcessTrend &trend = processTrends[key];
+            trend.lastMb = process.usedMb;
+            trend.lastSeen = now;
+        }
+
+        QList<QString> keys = processTrends.keys();
+        for (const QString &key : keys) {
+            if (processTrends[key].lastSeen.secsTo(now) > 900) {
+                processTrends.remove(key);
+            }
+        }
+    }
+
+    qint64 processDeltaMb(const ProcessUsage &process) const {
+        QString key = QString("%1:%2").arg(process.name).arg(process.pid);
+        if (!processTrends.contains(key)) {
+            return 0;
+        }
+        const ProcessTrend &trend = processTrends[key];
+        return qint64(trend.lastMb) - qint64(trend.firstMb);
+    }
+
+    QString biggestGrowthText() const {
+        const ProcessTrend *best = nullptr;
+        qint64 bestDelta = 0;
+        for (auto it = processTrends.constBegin(); it != processTrends.constEnd(); ++it) {
+            qint64 delta = qint64(it.value().lastMb) - qint64(it.value().firstMb);
+            if (delta > bestDelta) {
+                bestDelta = delta;
+                best = &it.value();
+            }
+        }
+
+        if (!best || bestDelta < 300) {
+            return QString();
+        }
+        return ko("%1 +%2 MB").arg(best->name, QString::number(bestDelta));
+    }
+
+    QString leakStatusText(const MemorySnapshot &snapshot) const {
+        QString growth = biggestGrowthText();
+        if (!growth.isEmpty()) {
+            return ko("누수 의심: %1").arg(growth);
+        }
+
+        if (totalSampleCount >= 1800 && snapshot.load >= DWORD(averageLoadToday() + 8)) {
+            return ko("누수 의심: RAM 증가 추세");
+        }
+
+        if (snapshot.nonPagedPoolMb >= 1024) {
+            return ko("누수 의심: Non-Paged Pool 높음");
+        }
+
+        if (totalSampleCount < 1800) {
+            return ko("누수 의심: 학습 중");
+        }
+
+        return ko("누수 의심: 없음");
+    }
+
+    void updateTopProcesses(const QVector<ProcessUsage> &processes) {
+        if (!topProcesses) {
+            return;
+        }
+
+        QStringList lines;
+        int rank = 1;
+        for (const ProcessUsage &process : processes) {
+            if (rank > 5) {
+                break;
+            }
+            qint64 delta = processDeltaMb(process);
+            QString deltaText = delta >= 0 ? QString("+%1 MB").arg(delta) : QString("%1 MB").arg(delta);
+            lines << QString("%1. %2%3 MB  오늘 %4  PID %5")
+                         .arg(rank++)
+                         .arg(process.name.left(22), -24)
+                         .arg(process.usedMb, 5)
+                         .arg(deltaText, 9)
+                         .arg(process.pid);
+        }
+        if (lines.isEmpty()) {
+            lines << ko("프로세스 정보를 읽는 중입니다. 관리자 권한이면 더 정확합니다.");
+        }
+        topProcesses->setPlainText(lines.join('\n'));
     }
 
     int heaviestHour() const {
@@ -768,6 +1045,12 @@ private:
         metrics->addWidget(reportMetric(ko("다음 기준"), learnedThreshold > 0
                                         ? QString("%1%").arg(learnedThreshold)
                                         : ko("학습 중")), 1, 2);
+        if (!samples.isEmpty()) {
+            const MemorySnapshot latest = samples.last();
+            metrics->addWidget(reportMetric(ko("커밋 메모리"), QString("%1 MB").arg(latest.commitMb)), 2, 0);
+            metrics->addWidget(reportMetric(ko("페이지 파일"), QString("%1 MB").arg(latest.pageFileUsedMb)), 2, 1);
+            metrics->addWidget(reportMetric(ko("풀 메모리"), ko("%1 / %2 MB").arg(latest.nonPagedPoolMb).arg(latest.pagedPoolMb)), 2, 2);
+        }
         layout->addLayout(metrics);
 
         auto *chart = new HourChartWidget(dialog);
@@ -939,16 +1222,56 @@ private:
         }
         QTextStream out(&file);
         if (fresh) {
-            out << "time,load_percent,used_mb,total_mb,available_mb,qi_score,threshold,optimize_count\n";
+            out << "time,load_percent,used_mb,total_mb,available_mb,commit_mb,commit_limit_mb,page_file_used_mb,page_file_total_mb,non_paged_pool_mb,paged_pool_mb,qi_score,threshold,optimize_count\n";
         }
         out << snapshot.time.toString(Qt::ISODate) << ','
             << snapshot.load << ','
             << snapshot.usedMb << ','
             << snapshot.totalMb << ','
             << snapshot.availableMb << ','
+            << snapshot.commitMb << ','
+            << snapshot.commitLimitMb << ','
+            << snapshot.pageFileUsedMb << ','
+            << snapshot.pageFileTotalMb << ','
+            << snapshot.nonPagedPoolMb << ','
+            << snapshot.pagedPoolMb << ','
             << qi.score << ','
             << activeThreshold << ','
             << optimizeCount << '\n';
+    }
+
+    void appendProcessCsv(const QVector<ProcessUsage> &processes, const QDateTime &time) {
+        qint64 now = time.toMSecsSinceEpoch();
+        if (lastProcessCsvMs > 0 && now - lastProcessCsvMs < 10 * 60 * 1000) {
+            return;
+        }
+        lastProcessCsvMs = now;
+
+        QFile file(todayProcessCsvPath());
+        bool fresh = !file.exists();
+        if (!file.open(QIODevice::Append | QIODevice::Text)) {
+            return;
+        }
+
+        QTextStream out(&file);
+        if (fresh) {
+            out << "time,process_name,pid,ram_mb,delta_today_mb\n";
+        }
+
+        int written = 0;
+        for (const ProcessUsage &process : processes) {
+            if (written >= 20) {
+                break;
+            }
+            QString safeName = process.name;
+            safeName.replace('"', "\"\"");
+            out << time.toString(Qt::ISODate) << ','
+                << '"' << safeName << '"' << ','
+                << process.pid << ','
+                << process.usedMb << ','
+                << processDeltaMb(process) << '\n';
+            written++;
+        }
     }
 
     void writeDailyReport() {
@@ -971,6 +1294,44 @@ private:
         out << "- 자동 정리 횟수: " << optimizeCount << "회\n";
         out << "- 현재 PC 맞춤 정리 기준: " << adaptiveThreshold << "%\n";
         out << "- 가장 무거운 시간대: " << heaviestHour() << "시\n\n";
+
+        if (!samples.isEmpty()) {
+            const MemorySnapshot latest = samples.last();
+            out << "누수 탐지 참고 수치\n";
+            out << "- 커밋 메모리: " << latest.commitMb << " / " << latest.commitLimitMb << " MB\n";
+            out << "- 페이지 파일: " << latest.pageFileUsedMb << " / " << latest.pageFileTotalMb << " MB\n";
+            out << "- Non-Paged Pool: " << latest.nonPagedPoolMb << " MB\n";
+            out << "- Paged Pool: " << latest.pagedPoolMb << " MB\n";
+            out << "- 현재 판단: " << leakStatusText(latest) << "\n\n";
+        }
+
+        out << "오늘 RAM 증가 상위 프로세스\n";
+        QVector<ProcessTrend> trends;
+        for (auto it = processTrends.constBegin(); it != processTrends.constEnd(); ++it) {
+            trends.push_back(it.value());
+        }
+        std::sort(trends.begin(), trends.end(), [](const ProcessTrend &a, const ProcessTrend &b) {
+            return qint64(a.lastMb) - qint64(a.firstMb) > qint64(b.lastMb) - qint64(b.firstMb);
+        });
+        int listed = 0;
+        for (const ProcessTrend &trend : trends) {
+            qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
+            if (delta <= 0 || listed >= 5) {
+                continue;
+            }
+            out << QString("- %1 PID %2: %3 MB -> %4 MB (%5%6 MB)\n")
+                       .arg(trend.name)
+                       .arg(trend.pid)
+                       .arg(trend.firstMb)
+                       .arg(trend.lastMb)
+                       .arg(delta > 0 ? "+" : "")
+                       .arg(delta);
+            listed++;
+        }
+        if (listed == 0) {
+            out << "- 아직 눈에 띄는 증가 프로세스가 없습니다.\n";
+        }
+        out << "\n";
 
         out << "시간대별 RAM 사용량\n";
         for (int i = 0; i < 24; ++i) {

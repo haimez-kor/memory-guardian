@@ -21,11 +21,15 @@ Compare the result with the value in `SHA256SUMS.txt` or `update.json`.
 
 - Administrator permission manifest
 - Modern GUI for non-technical users
-- QI-based RAM status scoring
+- Optimization score based RAM status
+- Commit memory, page file, non-paged pool, and paged pool tracking
+- Top RAM processes with daily growth
+- Per-process RAM growth CSV saved every 10 minutes
+- Leak suspicion status based on process growth and RAM trend
 - Automatic RAM cleanup based on memory pressure
 - Daily RAM usage report
 - Hourly RAM usage tracking
-- Adaptive cleanup threshold after daily learning
+- 1-hour temporary learning and full daily adaptive threshold learning
 - Background protection when the window is closed
 - System tray menu for reopening, viewing report, or quitting
 - Optional Windows startup background task
