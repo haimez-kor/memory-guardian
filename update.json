@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.1.8",
+    "version":  "1.1.9",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
     "sha256":  "62A822C4BBA596AE006F754901921D7225D215203B41943E1A3CFDB31501647B",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Adds startup-only automatic updates, SHA-256 verified installer downloads, clean reinstall of app files while preserving reports and settings, memory leak trend tracking, process RAM growth, and 1-hour temporary learning."
+    "notes":  "Requests administrator permission on startup, prevents repeated cleanup spam when RAM does not drop, keeps reports/settings during updates, improves report UI spacing, and keeps SHA-256 verified automatic updates."
 }

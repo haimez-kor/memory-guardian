@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.1.8"
+$version = "v1.1.9"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Adds startup-only automatic updates, SHA-256 verified installer downloads, clean reinstall of app files while preserving reports and settings, memory leak trend tracking, process RAM growth, and 1-hour temporary learning."
+    notes = "Requests administrator permission on startup, prevents repeated cleanup spam when RAM does not drop, keeps reports/settings during updates, improves report UI spacing, and keeps SHA-256 verified automatic updates."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,15 +42,17 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.1.8
+## Memory Guardian 1.1.9
 
 - Add commit memory, page file, Non-Paged Pool, and Paged Pool tracking
 - Show top RAM processes with today's growth amount
 - Save per-process RAM records every 10 minutes
 - Add leak suspicion status for process growth and RAM trend
 - Add 1-hour temporary learning before the full daily learned threshold
-- Automatically download and start verified updates once when the app starts
-- Clean old app files before reinstall while preserving reports and learned settings
+- Request administrator permission when the app starts so memory cleanup can work properly
+- Stop repeated cleanup attempts for 10 minutes when RAM does not drop after cleanup
+- Improve daily report card spacing to prevent clipped numbers
+- Keep reports and learned settings during automatic reinstall updates
 - Keep SHA-256 update verification metadata for corruption/tamper checks
 
 SHA-256:
@@ -66,10 +68,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.1.8" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.1.9" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.1.8" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.1.9" --notes $notes --latest
 }
 
 Write-Host ""

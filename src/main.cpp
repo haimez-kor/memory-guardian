@@ -7,7 +7,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.1.8";
+static const char *APP_VERSION = "1.1.9";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -36,6 +36,33 @@ static int compareVersions(const QString &left, const QString &right) {
         }
     }
     return 0;
+}
+
+static bool runningAsAdmin() {
+    BOOL isAdmin = FALSE;
+    PSID adminGroup = nullptr;
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    if (AllocateAndInitializeSid(&ntAuthority,
+                                 2,
+                                 SECURITY_BUILTIN_DOMAIN_RID,
+                                 DOMAIN_ALIAS_RID_ADMINS,
+                                 0,
+                                 0,
+                                 0,
+                                 0,
+                                 0,
+                                 0,
+                                 &adminGroup)) {
+        CheckTokenMembership(nullptr, adminGroup, &isAdmin);
+        FreeSid(adminGroup);
+    }
+    return isAdmin == TRUE;
+}
+
+static QString quotedArgument(const QString &value) {
+    QString escaped = value;
+    escaped.replace('"', "\\\"");
+    return '"' + escaped + '"';
 }
 
 struct MemorySnapshot {
@@ -561,6 +588,7 @@ private:
     QDate reportDate;
     qint64 lastOptimizeMs = 0;
     qint64 lastProcessCsvMs = 0;
+    qint64 optimizeSuppressedUntilMs = 0;
     bool running = true;
     int adaptiveThreshold = 80;
     int learnedThreshold = 0;
@@ -568,11 +596,15 @@ private:
     quint64 totalLoadSum = 0;
     quint64 totalUsedSum = 0;
     int totalSampleCount = 0;
+    int lastOptimizeLoad = -1;
+    int optimizeCheckSamples = 0;
+    int ineffectiveOptimizeCount = 0;
     DWORD peakLoad = 0;
     bool quitRequested = false;
     bool trayNoticeShown = false;
     bool startedInBackground = false;
     bool startupUpdateChecked = false;
+    bool optimizeEffectPending = false;
 
     QWidget *makeMetric(const QString &labelText, QLabel *value) {
         auto *box = new QWidget();
@@ -768,8 +800,16 @@ private:
         appendProcessCsv(processes, snapshot.time);
 
         qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (qi.shouldOptimize && now - lastOptimizeMs > 15000) {
+        checkOptimizeEffect(snapshot, now);
+
+        if (qi.shouldOptimize
+            && now >= optimizeSuppressedUntilMs
+            && now - lastOptimizeMs > 60000
+            && !optimizeEffectPending) {
             lastOptimizeMs = now;
+            lastOptimizeLoad = int(snapshot.load);
+            optimizeCheckSamples = 0;
+            optimizeEffectPending = true;
             optimizeCount++;
             appendLog(ko("최적화 점수가 낮거나 RAM 사용률이 기준을 넘어 자동 처리를 시작합니다."));
             if (action->currentIndex() == 0) {
@@ -780,6 +820,34 @@ private:
             }
             writeDailyReport();
         }
+    }
+
+    void checkOptimizeEffect(const MemorySnapshot &snapshot, qint64 now) {
+        if (!optimizeEffectPending) {
+            return;
+        }
+
+        optimizeCheckSamples++;
+        if (optimizeCheckSamples < 3) {
+            return;
+        }
+
+        optimizeEffectPending = false;
+        int currentLoad = int(snapshot.load);
+        if (lastOptimizeLoad >= 0 && currentLoad >= lastOptimizeLoad - 1) {
+            ineffectiveOptimizeCount++;
+            optimizeSuppressedUntilMs = now + 10 * 60 * 1000;
+            QString growth = biggestGrowthText();
+            appendLog(growth.isEmpty()
+                          ? ko("정리 후에도 RAM 사용률이 거의 내려가지 않았습니다. 반복 정리를 10분간 멈추고 누수 추세를 감시합니다.")
+                          : ko("정리 후에도 RAM 사용률이 거의 내려가지 않았습니다. 반복 정리를 10분간 멈추고 %1 증가를 감시합니다.").arg(growth));
+            return;
+        }
+
+        ineffectiveOptimizeCount = 0;
+        appendLog(ko("메모리 정리 효과 확인: RAM 사용률이 %1%에서 %2%로 낮아졌습니다.")
+                  .arg(lastOptimizeLoad)
+                  .arg(currentLoad));
     }
 
     void resetDailyStats() {
@@ -793,6 +861,11 @@ private:
         samples.clear();
         processTrends.clear();
         lastProcessCsvMs = 0;
+        optimizeSuppressedUntilMs = 0;
+        optimizeEffectPending = false;
+        lastOptimizeLoad = -1;
+        optimizeCheckSamples = 0;
+        ineffectiveOptimizeCount = 0;
         appendLog(ko("새 날짜가 시작되어 오늘의 기록을 새로 시작합니다."));
     }
 
@@ -1087,10 +1160,11 @@ private:
 
     QLabel *reportMetric(const QString &label, const QString &value) {
         auto *box = new QLabel(QString("<div style='font-size:12px;color:#94a3b8'>%1</div>"
-                                       "<div style='font-size:24px;font-weight:800;margin-top:4px'>%2</div>")
+                                       "<div style='font-size:22px;font-weight:800;margin-top:6px;line-height:30px'>%2</div>")
                                    .arg(label, value));
         box->setTextFormat(Qt::RichText);
-        box->setMinimumHeight(70);
+        box->setMinimumHeight(84);
+        box->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         box->setObjectName("reportMetric");
         return box;
     }
@@ -1098,7 +1172,7 @@ private:
     void showDailyReportDialog() {
         auto *dialog = new QDialog(this);
         dialog->setWindowTitle(ko("오늘의 메모리 리포트"));
-        dialog->resize(760, 620);
+        dialog->resize(820, 660);
 
         auto *layout = new QVBoxLayout(dialog);
         layout->setContentsMargins(24, 22, 24, 22);
@@ -1112,7 +1186,8 @@ private:
         layout->addWidget(subLabel);
 
         auto *metrics = new QGridLayout();
-        metrics->setSpacing(12);
+        metrics->setHorizontalSpacing(12);
+        metrics->setVerticalSpacing(14);
         metrics->addWidget(reportMetric(ko("평균 RAM"), QString("%1%").arg(averageLoadToday())), 0, 0);
         metrics->addWidget(reportMetric(ko("최고 RAM"), QString("%1%").arg(peakLoad)), 0, 1);
         metrics->addWidget(reportMetric(ko("평균 사용량"), QString("%1 MB").arg(averageUsedToday())), 0, 2);
@@ -1780,7 +1855,34 @@ int main(int argc, char *argv[]) {
     QApplication::setStyle("Fusion");
     QApplication::setQuitOnLastWindowClosed(false);
 
-    bool backgroundStart = QCoreApplication::arguments().contains("--background");
+    QStringList arguments = QCoreApplication::arguments();
+    bool backgroundStart = arguments.contains("--background");
+
+    if (!runningAsAdmin() && !arguments.contains("--admin-requested")) {
+        QMessageBox::information(nullptr,
+                                 ko("관리자 권한 요청"),
+                                 ko("메모리 정리와 대기 메모리 정리를 제대로 수행하려면 관리자 권한이 필요합니다.\n\n이제 Windows 권한 요청 창이 뜨면 '예'를 눌러주세요."));
+
+        QStringList relaunchArgs;
+        for (int i = 1; i < arguments.size(); ++i) {
+            relaunchArgs << quotedArgument(arguments.at(i));
+        }
+        relaunchArgs << "--admin-requested";
+
+        HINSTANCE result = ShellExecuteW(nullptr,
+                                         L"runas",
+                                         reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(QCoreApplication::applicationFilePath()).utf16()),
+                                         reinterpret_cast<LPCWSTR>(relaunchArgs.join(' ').utf16()),
+                                         nullptr,
+                                         SW_SHOWNORMAL);
+        if (reinterpret_cast<intptr_t>(result) > 32) {
+            return 0;
+        }
+
+        QMessageBox::warning(nullptr,
+                             ko("제한 모드"),
+                             ko("관리자 권한이 허용되지 않아 제한 모드로 계속 실행합니다.\n이 경우 RAM 사용률이 바로 낮아지지 않을 수 있습니다."));
+    }
 
     GuardianWindow window(backgroundStart);
     if (backgroundStart) {
