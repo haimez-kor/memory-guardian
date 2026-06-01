@@ -1,0 +1,31 @@
+# Build outputs
+build/
+dist-app*/
+*.exe
+*.dll
+*.zip
+*.o
+*.obj
+*.a
+*.pdb
+*.dbg
+
+# Generated installer leftovers
+~*.DDF
+~*.CAB
+~*.INF
+~*.RPT
+installer/app.zip
+installer/installer_res.o
+installer/setup.sed
+
+# Runtime data
+reports/
+*.log
+
+# IDE/editor
+.vs/
+.vscode/
+*.user
+*.suo
+
