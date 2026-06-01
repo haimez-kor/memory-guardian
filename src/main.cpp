@@ -5,7 +5,7 @@
 #include <psapi.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.1.1";
+static const char *APP_VERSION = "1.1.2";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -332,14 +332,54 @@ public:
         });
 
         applyStyle();
+        setupTray();
         timer.start();
         appendLog(ko("전체 RAM 자동 보호를 시작했습니다."));
         appendLog(ko("현재 버전: %1").arg(APP_VERSION));
         appendLog(ko("하루 동안 시간대별 RAM 사용량을 기록해 자동 정리 기준을 학습합니다."));
+        appendLog(ko("닫기 버튼을 눌러도 창만 숨겨지고 보호는 백그라운드에서 계속됩니다."));
         appendLog(learnedThreshold > 0
                       ? ko("이전에 하루 동안 학습한 자동 정리 기준을 적용합니다.")
                       : ko("하루 학습 데이터가 아직 없어 PC 사양 기준으로 보호합니다."));
         sample();
+    }
+
+protected:
+    void closeEvent(QCloseEvent *event) override {
+        if (quitRequested) {
+            writeDailyReport();
+            event->accept();
+            return;
+        }
+
+        QMessageBox box(this);
+        box.setWindowTitle(ko("메모리 자동 보호기"));
+        box.setIcon(QMessageBox::Question);
+        box.setText(ko("창을 닫아도 보호 기능은 계속 실행할 수 있습니다."));
+        box.setInformativeText(ko("원하는 동작을 선택하세요."));
+
+        QPushButton *hideButton = box.addButton(ko("창만 닫기"), QMessageBox::AcceptRole);
+        QPushButton *quitButton = box.addButton(ko("완전 종료"), QMessageBox::DestructiveRole);
+        QPushButton *cancelButton = box.addButton(ko("취소"), QMessageBox::RejectRole);
+        box.setDefaultButton(hideButton);
+        box.exec();
+
+        if (box.clickedButton() == hideButton) {
+            event->ignore();
+            hideToTray();
+            return;
+        }
+
+        if (box.clickedButton() == quitButton) {
+            quitRequested = true;
+            writeDailyReport();
+            event->accept();
+            qApp->quit();
+            return;
+        }
+
+        Q_UNUSED(cancelButton);
+        event->ignore();
     }
 
 private:
@@ -364,6 +404,8 @@ private:
     QPushButton *reportButton = nullptr;
     QPushButton *updateButton = nullptr;
     QTextEdit *log = nullptr;
+    QSystemTrayIcon *trayIcon = nullptr;
+    QMenu *trayMenu = nullptr;
     QTimer timer;
     QVector<MemorySnapshot> samples;
     HourStats hours[24];
@@ -377,6 +419,8 @@ private:
     quint64 totalUsedSum = 0;
     int totalSampleCount = 0;
     DWORD peakLoad = 0;
+    bool quitRequested = false;
+    bool trayNoticeShown = false;
 
     QWidget *makeMetric(const QString &labelText, QLabel *value) {
         auto *box = new QWidget();
@@ -419,6 +463,78 @@ private:
             statusPill->setText(ko("일시 중지"));
             appendLog(ko("자동 보호를 중지했습니다."));
         }
+    }
+
+    QIcon appIcon() const {
+        QPixmap pixmap(64, 64);
+        pixmap.fill(Qt::transparent);
+
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setBrush(QColor("#2563eb"));
+        painter.setPen(Qt::NoPen);
+        painter.drawRoundedRect(QRect(4, 4, 56, 56), 14, 14);
+        painter.setBrush(QColor("#10b981"));
+        painter.drawEllipse(QRect(18, 18, 28, 28));
+        painter.setPen(QPen(QColor("#ffffff"), 5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPoint(25, 32), QPoint(31, 38));
+        painter.drawLine(QPoint(31, 38), QPoint(41, 26));
+        return QIcon(pixmap);
+    }
+
+    void setupTray() {
+        if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+            appendLog(ko("시스템 트레이를 사용할 수 없어 창 닫기 보호만 사용합니다."));
+            return;
+        }
+
+        trayIcon = new QSystemTrayIcon(appIcon(), this);
+        trayIcon->setToolTip(ko("메모리 자동 보호기 - 백그라운드 보호 중"));
+        trayMenu = new QMenu(this);
+
+        QAction *showAction = trayMenu->addAction(ko("창 열기"));
+        QAction *reportAction = trayMenu->addAction(ko("오늘 리포트 보기"));
+        trayMenu->addSeparator();
+        QAction *quitAction = trayMenu->addAction(ko("완전 종료"));
+
+        connect(showAction, &QAction::triggered, this, [this] { showFromTray(); });
+        connect(reportAction, &QAction::triggered, this, [this] {
+            showFromTray();
+            writeDailyReport();
+            showDailyReportDialog();
+        });
+        connect(quitAction, &QAction::triggered, this, [this] {
+            quitRequested = true;
+            writeDailyReport();
+            qApp->quit();
+        });
+        connect(trayIcon, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+            if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) {
+                showFromTray();
+            }
+        });
+
+        trayIcon->setContextMenu(trayMenu);
+        trayIcon->show();
+    }
+
+    void hideToTray() {
+        hide();
+        appendLog(ko("창을 숨겼습니다. 보호 기능은 백그라운드에서 계속 실행됩니다."));
+        if (trayIcon && !trayNoticeShown) {
+            trayIcon->showMessage(ko("백그라운드 보호 중"),
+                                  ko("창만 닫혔고 메모리 보호는 계속 실행됩니다."),
+                                  QSystemTrayIcon::Information,
+                                  3500);
+            trayNoticeShown = true;
+        }
+    }
+
+    void showFromTray() {
+        show();
+        raise();
+        activateWindow();
+        appendLog(ko("창을 다시 열었습니다."));
     }
 
     void sample() {
@@ -1002,6 +1118,7 @@ private:
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QApplication::setStyle("Fusion");
+    QApplication::setQuitOnLastWindowClosed(false);
 
     GuardianWindow window;
     window.show();

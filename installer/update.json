@@ -1,5 +1,5 @@
 {
-  "version": "1.1.1",
+  "version": "1.1.2",
   "downloadUrl": "",
   "notes": "현재 설치된 기본 버전입니다. 배포 서버를 만들면 downloadUrl에 새 설치 파일 주소를 넣으면 됩니다."
 }
