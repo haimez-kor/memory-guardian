@@ -1,5 +1,5 @@
 {
   "version": "1.1.3",
-  "downloadUrl": "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-  "notes": "PC 시작 시 백그라운드 자동 보호 작업을 등록합니다. 닫기 버튼을 누르면 창만 닫고 보호를 계속할 수 있으며, 시스템 트레이에서 창 열기와 완전 종료를 지원합니다."
+  "updateUrl": "https://raw.githubusercontent.com/haimez-kor/memory-guardian/main/update.json",
+  "notes": "공개 업데이트 정보는 GitHub의 update.json에서 확인합니다."
 }

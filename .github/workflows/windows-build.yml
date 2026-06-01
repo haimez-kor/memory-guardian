@@ -34,9 +34,17 @@ jobs:
         shell: cmd
         run: package-installer.bat
 
+      - name: Generate checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 .\MemoryGuardianSetup.exe).Hash
+          "$hash  MemoryGuardianSetup.exe" | Set-Content -Encoding ASCII .\SHA256SUMS.txt
+          Get-Content .\SHA256SUMS.txt
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: MemoryGuardianSetup
-          path: MemoryGuardianSetup.exe
-
+          path: |
+            MemoryGuardianSetup.exe
+            SHA256SUMS.txt

@@ -92,3 +92,9 @@ package-installer.bat
 ```
 
 현재 버전보다 높은 버전이면 다운로드 링크를 열 수 있습니다.
+
+업데이트 파일 변조나 다운로드 깨짐을 확인할 수 있도록 `update.json`에는 설치 파일의 `sha256` 값과 `checksumUrl`이 들어갑니다. 설치 파일을 받은 뒤 아래 명령으로 값이 같은지 확인할 수 있습니다.
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\MemoryGuardianSetup.exe
+```

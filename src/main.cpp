@@ -859,8 +859,38 @@ private:
         }
 
         QJsonObject object = document.object();
+        QString remoteManifestUrl = object.value("updateUrl").toString();
+        if (!remoteManifestUrl.isEmpty()) {
+            QNetworkAccessManager manager;
+            QNetworkReply *reply = manager.get(QNetworkRequest(QUrl(remoteManifestUrl)));
+            QEventLoop loop;
+            connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+            QTimer::singleShot(10000, &loop, &QEventLoop::quit);
+            loop.exec();
+
+            if (reply->error() != QNetworkReply::NoError) {
+                QMessageBox::warning(this, ko("업데이트 확인"), ko("GitHub 업데이트 정보를 가져오지 못했습니다."));
+                appendLog(ko("GitHub 업데이트 확인 실패: %1").arg(reply->errorString()));
+                reply->deleteLater();
+                return;
+            }
+
+            payload = reply->readAll();
+            manifestSource = remoteManifestUrl;
+            reply->deleteLater();
+
+            document = QJsonDocument::fromJson(payload, &error);
+            if (error.error != QJsonParseError::NoError || !document.isObject()) {
+                QMessageBox::warning(this, ko("업데이트 확인"), ko("GitHub 업데이트 정보 형식이 올바르지 않습니다."));
+                return;
+            }
+            object = document.object();
+        }
+
         QString latest = object.value("version").toString();
         QString downloadUrl = object.value("downloadUrl").toString();
+        QString sha256 = object.value("sha256").toString().trimmed().toUpper();
+        QString checksumUrl = object.value("checksumUrl").toString();
         QString notes = object.value("notes").toString();
 
         if (latest.isEmpty()) {
@@ -876,8 +906,16 @@ private:
             return;
         }
 
-        QString message = ko("새 버전이 있습니다.\n\n현재 버전: %1\n새 버전: %2\n\n%3")
-                              .arg(APP_VERSION, latest, notes);
+        bool checksumLooksValid = sha256.size() == 64;
+        QString verifyText = checksumLooksValid
+                                 ? ko("검증 SHA-256:\n%1").arg(sha256)
+                                 : ko("주의: 업데이트 정보에 검증용 SHA-256 해시가 없습니다.");
+        if (!checksumUrl.isEmpty()) {
+            verifyText += ko("\n체크섬 파일:\n%1").arg(checksumUrl);
+        }
+
+        QString message = ko("새 버전이 있습니다.\n\n현재 버전: %1\n새 버전: %2\n\n%3\n\n%4")
+                              .arg(APP_VERSION, latest, notes, verifyText);
         QMessageBox box(this);
         box.setWindowTitle(ko("업데이트 확인"));
         box.setText(message);
@@ -885,7 +923,9 @@ private:
         box.addButton(ko("나중에"), QMessageBox::RejectRole);
         box.exec();
 
-        appendLog(ko("업데이트 발견: %1, 출처: %2").arg(latest, manifestSource));
+        appendLog(checksumLooksValid
+                      ? ko("업데이트 발견: %1, SHA-256 검증 정보 포함, 출처: %2").arg(latest, manifestSource)
+                      : ko("업데이트 발견: %1, 검증 해시 없음, 출처: %2").arg(latest, manifestSource));
         if (box.clickedButton() == openButton && !downloadUrl.isEmpty()) {
             QDesktopServices::openUrl(QUrl(downloadUrl));
         }
