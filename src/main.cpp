@@ -7,7 +7,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.2.0";
+static const char *APP_VERSION = "1.2.1";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -113,6 +113,7 @@ class HourChartWidget : public QWidget {
 public:
     explicit HourChartWidget(QWidget *parent = nullptr) : QWidget(parent) {
         setMinimumHeight(190);
+        setMouseTracking(true);
     }
 
     void setStats(const HourStats source[24], bool dark) {
@@ -124,6 +125,28 @@ public:
     }
 
 protected:
+    bool event(QEvent *event) override {
+        if (event->type() == QEvent::ToolTip) {
+            auto *helpEvent = static_cast<QHelpEvent *>(event);
+            int hour = hourAt(helpEvent->pos());
+            if (hour >= 0 && stats[hour].count > 0) {
+                int average = int(stats[hour].loadSum / quint64(stats[hour].count));
+                quint64 used = stats[hour].usedSum / quint64(stats[hour].count);
+                QToolTip::showText(helpEvent->globalPos(),
+                                   ko("%1:00\nRAM %2%\n%3 MB")
+                                       .arg(hour, 2, 10, QChar('0'))
+                                       .arg(average)
+                                       .arg(used),
+                                   this);
+            } else {
+                QToolTip::hideText();
+                event->ignore();
+            }
+            return true;
+        }
+        return QWidget::event(event);
+    }
+
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
@@ -169,6 +192,27 @@ protected:
 private:
     HourStats stats[24] {};
     bool darkMode = false;
+
+    QRect chartArea() const {
+        return rect().adjusted(12, 12, -12, -24);
+    }
+
+    int hourAt(const QPoint &point) const {
+        QRect area = chartArea();
+        int gap = 5;
+        int barWidth = qMax(8, (area.width() - gap * 23) / 24);
+        int relativeX = point.x() - area.left();
+        if (relativeX < 0) {
+            return -1;
+        }
+        int slot = barWidth + gap;
+        int hour = relativeX / slot;
+        int within = relativeX % slot;
+        if (hour < 0 || hour >= 24 || within > barWidth) {
+            return -1;
+        }
+        return hour;
+    }
 };
 
 static MemorySnapshot readMemory() {
@@ -1252,6 +1296,43 @@ private:
         return box;
     }
 
+    QVector<ProcessTrend> sortedProcessGrowth() const {
+        QVector<ProcessTrend> trends;
+        for (auto it = processTrends.constBegin(); it != processTrends.constEnd(); ++it) {
+            trends.push_back(it.value());
+        }
+        std::sort(trends.begin(), trends.end(), [](const ProcessTrend &a, const ProcessTrend &b) {
+            return qint64(a.lastMb) - qint64(a.firstMb) > qint64(b.lastMb) - qint64(b.firstMb);
+        });
+        return trends;
+    }
+
+    QString processGrowthSummaryHtml() const {
+        QVector<ProcessTrend> trends = sortedProcessGrowth();
+        QStringList lines;
+        int rank = 1;
+        for (const ProcessTrend &trend : trends) {
+            if (rank > 5) {
+                break;
+            }
+            qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
+            if (delta == 0) {
+                continue;
+            }
+            QString sign = delta > 0 ? "+" : "";
+            lines << ko("<div style='font-size:14px;line-height:24px'><b>%1. %2</b> %3%4 MB · %5</div>")
+                         .arg(rank++)
+                         .arg(trend.name.toHtmlEscaped())
+                         .arg(sign)
+                         .arg(delta)
+                         .arg(processPatternLabel(trend));
+        }
+        if (lines.isEmpty()) {
+            return ko("<div style='font-size:14px;line-height:24px;color:#94a3b8'>아직 눈에 띄는 증가 프로세스가 없습니다.</div>");
+        }
+        return lines.join("");
+    }
+
     void showDailyReportDialog() {
         auto *dialog = new QDialog(this);
         dialog->setWindowTitle(ko("오늘의 메모리 리포트"));
@@ -1281,11 +1362,21 @@ private:
                                         : ko("학습 중")), 1, 2);
         if (!samples.isEmpty()) {
             const MemorySnapshot latest = samples.last();
-            metrics->addWidget(reportMetric(ko("커밋 메모리"), QString("%1 MB").arg(latest.commitMb)), 2, 0);
-            metrics->addWidget(reportMetric(ko("페이지 파일"), QString("%1 MB").arg(latest.pageFileUsedMb)), 2, 1);
-            metrics->addWidget(reportMetric(ko("풀 메모리"), ko("%1 / %2 MB").arg(latest.nonPagedPoolMb).arg(latest.pagedPoolMb)), 2, 2);
+            metrics->addWidget(reportMetric(ko("커밋 메모리"), QString("%1 / %2 MB").arg(latest.commitMb).arg(latest.commitLimitMb)), 2, 0);
+            metrics->addWidget(reportMetric(ko("페이지 파일"), QString("%1 / %2 MB").arg(latest.pageFileUsedMb).arg(latest.pageFileTotalMb)), 2, 1);
+            metrics->addWidget(reportMetric(ko("Non-Paged Pool"), QString("%1 MB").arg(latest.nonPagedPoolMb)), 2, 2);
+            metrics->addWidget(reportMetric(ko("Paged Pool"), QString("%1 MB").arg(latest.pagedPoolMb)), 3, 0);
         }
         layout->addLayout(metrics);
+
+        auto *growthTitle = new QLabel(ko("오늘 가장 많이 증가한 프로세스"));
+        growthTitle->setStyleSheet("font-size: 15px; font-weight: 800;");
+        auto *growthList = new QLabel(processGrowthSummaryHtml());
+        growthList->setTextFormat(Qt::RichText);
+        growthList->setObjectName("reportMetric");
+        growthList->setMinimumHeight(86);
+        layout->addWidget(growthTitle);
+        layout->addWidget(growthList);
 
         auto *chart = new HourChartWidget(dialog);
         chart->setStats(hours, darkModeEnabled());
@@ -1692,13 +1783,7 @@ private:
         }
 
         out << "오늘 RAM 증가 상위 프로세스\n";
-        QVector<ProcessTrend> trends;
-        for (auto it = processTrends.constBegin(); it != processTrends.constEnd(); ++it) {
-            trends.push_back(it.value());
-        }
-        std::sort(trends.begin(), trends.end(), [](const ProcessTrend &a, const ProcessTrend &b) {
-            return qint64(a.lastMb) - qint64(a.firstMb) > qint64(b.lastMb) - qint64(b.firstMb);
-        });
+        QVector<ProcessTrend> trends = sortedProcessGrowth();
         int listed = 0;
         for (const ProcessTrend &trend : trends) {
             qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
@@ -1995,5 +2080,6 @@ int main(int argc, char *argv[]) {
 
     return app.exec();
 }
+
 
 
