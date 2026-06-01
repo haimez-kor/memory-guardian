@@ -20,7 +20,7 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\MemoryGuardian.exe
 VersionInfoVersion={#AppVersion}
 VersionInfoCompany={#AppPublisher}
@@ -48,4 +48,4 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""Memory Guardian Ba
 Filename: "{app}\MemoryGuardian.exe"; Description: "Launch Memory Guardian"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Memory Guardian Background Protection"""; Flags: runhidden
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Memory Guardian Background Protection"""; Flags: runhidden; RunOnceId: "RemoveStartupTask"
