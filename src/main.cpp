@@ -7,7 +7,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.1.7";
+static const char *APP_VERSION = "1.1.8";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -1308,17 +1308,30 @@ private:
 
         QString message = ko("새 버전이 있습니다.\n\n현재 버전: %1\n새 버전: %2\n\n%3\n\n%4")
                               .arg(APP_VERSION, latest, notes, verifyText);
+        appendLog(checksumLooksValid
+                      ? ko("업데이트 발견: %1, SHA-256 검증 정보 포함, 출처: %2").arg(latest, manifestSource)
+                      : ko("업데이트 발견: %1, 검증 해시 없음, 출처: %2").arg(latest, manifestSource));
+
+        if (startupCheck) {
+            if (!checksumLooksValid) {
+                showStartupUpdateStatus(ko("새 버전 %1이 있지만 검증용 SHA-256이 없어 자동 업데이트를 중단했습니다.").arg(latest), 0);
+                appendLog(ko("자동 업데이트 중단: SHA-256 검증 정보가 없습니다."));
+                return;
+            }
+
+            showStartupUpdateStatus(ko("새 버전 %1을 발견했습니다.\n설정과 리포트는 유지하고 앱 파일만 새로 설치합니다.").arg(latest), 2500);
+            downloadAndInstallUpdate(downloadUrl, sha256, latest);
+            return;
+        }
+
         QMessageBox box(this);
-        box.setWindowTitle(startupCheck ? ko("업데이트 상태") : ko("업데이트 확인"));
+        box.setWindowTitle(ko("업데이트 확인"));
         box.setText(message);
-        QPushButton *installButton = box.addButton(ko("다운로드 후 설치"), QMessageBox::AcceptRole);
+        QPushButton *installButton = box.addButton(ko("자동 업데이트 설치"), QMessageBox::AcceptRole);
         QPushButton *openButton = box.addButton(ko("브라우저로 열기"), QMessageBox::ActionRole);
         box.addButton(ko("나중에"), QMessageBox::RejectRole);
         box.exec();
 
-        appendLog(checksumLooksValid
-                      ? ko("업데이트 발견: %1, SHA-256 검증 정보 포함, 출처: %2").arg(latest, manifestSource)
-                      : ko("업데이트 발견: %1, 검증 해시 없음, 출처: %2").arg(latest, manifestSource));
         if (box.clickedButton() == installButton) {
             downloadAndInstallUpdate(downloadUrl, sha256, latest);
         } else if (box.clickedButton() == openButton && !downloadUrl.isEmpty()) {
@@ -1402,12 +1415,14 @@ private:
 
         QMessageBox::information(this,
                                  ko("업데이트 설치"),
-                                 ko("설치 파일 검증이 끝났습니다.\n이제 관리자 권한 설치 창이 열립니다.\n설치를 계속하려면 Windows 권한 요청에서 예를 누르세요."));
+                                 ko("설치 파일 검증이 끝났습니다.\n기존 앱 파일을 정리한 뒤 재설치합니다.\n리포트와 학습 설정은 유지됩니다.\nWindows 권한 요청에서 예를 누르세요."));
+
+        QString installerArgs = ko("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /MERGETASKS=\"startup,desktopicon\"");
 
         HINSTANCE result = ShellExecuteW(nullptr,
                                          L"runas",
                                          reinterpret_cast<LPCWSTR>(installerPath.utf16()),
-                                         nullptr,
+                                         reinterpret_cast<LPCWSTR>(installerArgs.utf16()),
                                          nullptr,
                                          SW_SHOWNORMAL);
         if (reinterpret_cast<intptr_t>(result) <= 32) {
@@ -1416,7 +1431,7 @@ private:
             return;
         }
 
-        appendLog(ko("업데이트 설치 프로그램을 관리자 권한으로 실행했습니다. 현재 앱을 종료합니다."));
+        appendLog(ko("자동 업데이트 설치를 시작했습니다. 기존 앱 파일은 정리하고 설정과 리포트는 유지합니다."));
         quitRequested = true;
         writeDailyReport();
         qApp->quit();

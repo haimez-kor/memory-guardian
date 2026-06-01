@@ -1,5 +1,5 @@
 ﻿#define AppName "Memory Guardian"
-#define AppVersion "1.1.7"
+#define AppVersion "1.1.8"
 #define AppPublisher "HAIMEZ"
 #define AppURL "https://github.com/haimez-kor/memory-guardian"
 
@@ -22,6 +22,8 @@ WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\MemoryGuardian.exe
+CloseApplications=yes
+RestartApplications=no
 VersionInfoVersion={#AppVersion}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription=Memory Guardian Setup
@@ -36,7 +38,23 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startup"; Description: "Start Memory Guardian in the background when Windows starts"; GroupDescription: "Startup"
 
 [Files]
-Source: "..\dist-app-v1.1.7\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist-app-v1.1.8\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+Type: files; Name: "{app}\MemoryGuardian.exe"
+Type: files; Name: "{app}\*.dll"
+Type: files; Name: "{app}\update.json"
+Type: files; Name: "{app}\LICENSE"
+Type: files; Name: "{app}\USER_AGREEMENT.md"
+Type: files; Name: "{app}\USER_AGREEMENT.en.md"
+Type: files; Name: "{app}\README.ko.md"
+Type: files; Name: "{app}\README.en.md"
+Type: filesandordirs; Name: "{app}\generic"
+Type: filesandordirs; Name: "{app}\imageformats"
+Type: filesandordirs; Name: "{app}\networkinformation"
+Type: filesandordirs; Name: "{app}\platforms"
+Type: filesandordirs; Name: "{app}\styles"
+Type: filesandordirs; Name: "{app}\tls"
 
 [Icons]
 Name: "{group}\Memory Guardian"; Filename: "{app}\MemoryGuardian.exe"; WorkingDir: "{app}"
