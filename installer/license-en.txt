@@ -1,0 +1,20 @@
+Memory Guardian User Agreement and Open Source Notice
+
+Memory Guardian is open-source software licensed under the MIT License.
+
+You may use, copy, modify, build, and redistribute the Software for personal, educational, research, commercial, or other purposes.
+
+If you redistribute the original Software, a modified version, or a package containing part of the Software, keep the original copyright and license notice:
+
+Memory Guardian
+Copyright (c) 2026 haimez-kor
+Licensed under the MIT License.
+Original project: https://github.com/haimez-kor/memory-guardian
+
+The Software observes Windows memory usage and may attempt memory cleanup according to user settings or learned thresholds. Behavior may vary depending on Windows version, permissions, drivers, security software, system state, running applications, and user configuration.
+
+Users install and use the Software at their own responsibility. The author and contributors are not liable for problems arising from installation, execution, administrator permission, startup registration, memory cleanup, update checks, configuration changes, modified versions, or third-party redistributed packages.
+
+The Software is provided "as is", without warranty of any kind.
+
+See USER_AGREEMENT.md, USER_AGREEMENT.en.md, and LICENSE for details.

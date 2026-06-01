@@ -7,7 +7,8 @@ call build.bat
 if errorlevel 1 exit /b 1
 
 set DIST=dist-app-v1.1.4
-if not exist "%DIST%" mkdir "%DIST%"
+if exist "%DIST%" rmdir /S /Q "%DIST%"
+mkdir "%DIST%"
 
 copy /Y build\MemoryGuardian.exe "%DIST%\" >nul
 for %%F in (build\*.dll) do copy /Y "%%F" "%DIST%\" >nul
@@ -21,16 +22,23 @@ copy /Y USER_AGREEMENT.en.md "%DIST%\USER_AGREEMENT.en.md" >nul
 copy /Y README.md "%DIST%\README.ko.md" >nul
 copy /Y README.en.md "%DIST%\README.en.md" >nul
 
-if exist installer\app.zip del /Q installer\app.zip
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '%DIST%\*' -DestinationPath 'installer\app.zip' -Force"
+set ISCC=
+for %%P in (
+  "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+  "%ProgramFiles%\Inno Setup 6\ISCC.exe"
+) do (
+  if exist %%~P set ISCC=%%~P
+)
+
+if "%ISCC%"=="" (
+  echo Inno Setup compiler was not found.
+  echo Install Inno Setup 6, then run this file again.
+  echo Official site: https://jrsoftware.org/isinfo.php
+  exit /b 2
+)
+
+"%ISCC%" installer\MemoryGuardian.iss
 if errorlevel 1 exit /b 1
 
-pushd installer
-windres installer.rc -O coff -o installer_res.o
-if errorlevel 1 exit /b 1
-g++ -municode -mwindows -static-libgcc -static-libstdc++ installer.cpp installer_res.o -o ..\MemoryGuardianSetup.exe -lshell32 -luser32 -lgdi32 -lcomctl32
-if errorlevel 1 exit /b 1
-popd
-
-echo Built MemoryGuardianSetup.exe
+echo Built MemoryGuardianSetup.exe with Inno Setup.
 endlocal

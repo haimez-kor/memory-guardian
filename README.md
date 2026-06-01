@@ -2,6 +2,19 @@
 
 PC 사용 패턴을 학습해서 RAM 사용률을 기록하고, 기준을 넘으면 자동으로 메모리를 정리하는 Windows용 보호 프로그램입니다.
 
+## 다운로드
+
+- 최신 릴리즈: https://github.com/haimez-kor/memory-guardian/releases/latest
+- 설치 파일: `MemoryGuardianSetup.exe`
+- 소스 코드: https://github.com/haimez-kor/memory-guardian
+- 무결성 확인 파일: `SHA256SUMS.txt`
+
+설치 파일을 받은 뒤 아래 명령으로 다운로드 깨짐 또는 변조 여부를 확인할 수 있습니다.
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\MemoryGuardianSetup.exe
+```
+
 ## 들어간 기능
 
 - 관리자 권한 요청 매니페스트 포함
@@ -16,6 +29,7 @@ PC 사용 패턴을 학습해서 RAM 사용률을 기록하고, 기준을 넘으
 - 닫기 버튼을 눌러도 백그라운드 보호 유지
 - 시스템 트레이에서 창 열기, 리포트 보기, 완전 종료 지원
 - 설치 후 PC 시작 시 백그라운드 자동 보호 등록
+- SHA-256 업데이트 무결성 확인
 - 실행에 필요한 DLL 포함
 
 ## 실행
@@ -77,7 +91,13 @@ build.bat
 
 빌드 후 실행에 필요한 DLL도 자동으로 복사합니다.
 
-설치 파일까지 다시 만들려면:
+대기업/상용 앱에서도 널리 쓰이는 오픈소스 설치 도구 스타일의 설치 파일을 만들려면 Inno Setup 6을 설치한 뒤 실행하세요.
+
+```bat
+build-inno-installer.bat
+```
+
+기존 내장 설치 파일 방식으로 다시 만들려면:
 
 ```bat
 package-installer.bat
