@@ -1,7 +1,7 @@
 {
   "version": "1.1.3",
   "downloadUrl": "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-  "sha256": "02A95F6218337050FC4BE1CE94D5629AA886A4397C863630E401C56D1705A7EE",
+  "sha256": "6D0DBD4530FE60271648A8D0DD352B070CF4687F485C09D95D277221495C29E6",
   "checksumUrl": "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
   "notes": "PC 시작 시 백그라운드 자동 보호 작업을 등록합니다. 닫기 버튼을 누르면 창만 닫고 보호를 계속할 수 있으며, 시스템 트레이에서 창 열기와 완전 종료를 지원합니다."
 }

@@ -6,7 +6,7 @@ set PATH=C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
 call build.bat
 if errorlevel 1 exit /b 1
 
-set DIST=dist-app-v1.1.1
+set DIST=dist-app-v1.1.3
 if not exist "%DIST%" mkdir "%DIST%"
 
 copy /Y build\MemoryGuardian.exe "%DIST%\" >nul
@@ -23,7 +23,7 @@ if errorlevel 1 exit /b 1
 pushd installer
 windres installer.rc -O coff -o installer_res.o
 if errorlevel 1 exit /b 1
-g++ -municode -mwindows -static-libgcc -static-libstdc++ installer.cpp installer_res.o -o ..\MemoryGuardianSetup.exe -lshell32 -luser32
+g++ -municode -mwindows -static-libgcc -static-libstdc++ installer.cpp installer_res.o -o ..\MemoryGuardianSetup.exe -lshell32 -luser32 -lgdi32 -lcomctl32
 if errorlevel 1 exit /b 1
 popd
 
