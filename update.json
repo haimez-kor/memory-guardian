@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.3.2",
+    "version":  "1.3.3",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "07AFBFC1406E82E10E8839D6E158EE165ED5AFF497773F9FED52A44AB00D6929",
+    "sha256":  "3BA3C3F790B3C230648082B1604C5DBFABB28B42AD0F0615A916C8A02F6DB42E",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Restarts Memory Guardian automatically after silent updates, keeps the Finish-screen launch checkbox for normal installs, and preserves settings/data during reinstall updates."
+    "notes":  "Polishes the startup window layout so top metrics no longer overlap, keeps auto-update restart behavior, and preserves settings/data during reinstall updates."
 }
