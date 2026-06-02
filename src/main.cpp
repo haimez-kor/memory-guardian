@@ -2060,7 +2060,7 @@ private:
                                  ko("업데이트 설치"),
                                  ko("설치 파일 검증이 끝났습니다.\n기존 앱 파일을 정리한 뒤 재설치합니다.\n리포트와 학습 설정은 유지됩니다.\nWindows 권한 요청에서 예를 누르세요."));
 
-        QString installerArgs = ko("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /MERGETASKS=\"startup,desktopicon\"");
+        QString installerArgs = ko("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPP=1 /MERGETASKS=\"startup,desktopicon\"");
 
         HINSTANCE result = ShellExecuteW(nullptr,
                                          L"runas",

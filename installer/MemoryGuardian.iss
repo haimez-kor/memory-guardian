@@ -64,7 +64,7 @@ Name: "{commondesktop}\Memory Guardian"; Filename: "{app}\MemoryGuardian.exe"; W
 [Run]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""Memory Guardian Background Protection"" /SC ONLOGON /RL HIGHEST /TR ""\""{app}\MemoryGuardian.exe\"" --background"""; Flags: runhidden; Tasks: startup
 Filename: "{app}\MemoryGuardian.exe"; Description: "Memory Guardian 실행"; Flags: nowait postinstall; Check: IsInteractiveInstall
-Filename: "{app}\MemoryGuardian.exe"; Flags: nowait; Check: IsSilentInstall
+Filename: "{app}\MemoryGuardian.exe"; Flags: nowait; Check: ShouldRestartAfterUpdate
 
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Memory Guardian Background Protection"""; Flags: runhidden; RunOnceId: "RemoveStartupTask"
@@ -75,9 +75,9 @@ begin
   Result := not WizardSilent;
 end;
 
-function IsSilentInstall: Boolean;
+function ShouldRestartAfterUpdate: Boolean;
 begin
-  Result := WizardSilent;
+  Result := ExpandConstant('{param:RESTARTAPP|0}') = '1';
 end;
 
 
