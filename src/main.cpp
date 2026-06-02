@@ -7,7 +7,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.0";
+static const char *APP_VERSION = "1.3.1";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -117,6 +117,15 @@ struct ServerProcessSummary {
     bool cloudflare = false;
 };
 
+struct LongTermPoint {
+    QDateTime time;
+    int load = 0;
+    quint64 usedMb = 0;
+    quint64 commitMb = 0;
+    quint64 nonPagedPoolMb = 0;
+    quint64 pagedPoolMb = 0;
+};
+
 class HourChartWidget : public QWidget {
 public:
     explicit HourChartWidget(QWidget *parent = nullptr) : QWidget(parent) {
@@ -221,6 +230,83 @@ private:
         }
         return hour;
     }
+};
+
+class LongTermChartWidget : public QWidget {
+public:
+    explicit LongTermChartWidget(QWidget *parent = nullptr) : QWidget(parent) {
+        setMinimumHeight(260);
+    }
+
+    void setPoints(const QVector<LongTermPoint> &source, bool dark) {
+        points = source;
+        darkMode = dark;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+
+        QColor text = darkMode ? QColor("#cbd5e1") : QColor("#334155");
+        QColor muted = darkMode ? QColor("#64748b") : QColor("#94a3b8");
+        QColor grid = darkMode ? QColor("#243244") : QColor("#e2e8f0");
+        QRect area = rect().adjusted(18, 28, -18, -34);
+
+        painter.setPen(text);
+        painter.drawText(18, 18, ko("장기 메모리 추세"));
+
+        painter.setPen(QPen(grid, 1));
+        for (int i = 0; i <= 4; ++i) {
+            int y = area.top() + area.height() * i / 4;
+            painter.drawLine(area.left(), y, area.right(), y);
+        }
+
+        if (points.size() < 2) {
+            painter.setPen(muted);
+            painter.drawText(area, Qt::AlignCenter, ko("아직 장기 추세 데이터가 부족합니다."));
+            return;
+        }
+
+        auto drawSeries = [&](auto valueFn, QColor color, quint64 maxValue) {
+            QPainterPath path;
+            for (int i = 0; i < points.size(); ++i) {
+                double x = double(area.left()) + double(area.width()) * double(i) / double(points.size() - 1);
+                double ratio = maxValue > 0 ? double(valueFn(points[i])) / double(maxValue) : 0.0;
+                ratio = std::clamp(ratio, 0.0, 1.0);
+                double y = double(area.bottom()) - double(area.height()) * ratio;
+                if (i == 0) {
+                    path.moveTo(x, y);
+                } else {
+                    path.lineTo(x, y);
+                }
+            }
+            painter.setPen(QPen(color, 2.4));
+            painter.drawPath(path);
+        };
+
+        quint64 maxMb = 1;
+        for (const LongTermPoint &point : points) {
+            maxMb = std::max(maxMb, point.usedMb);
+            maxMb = std::max(maxMb, point.commitMb);
+            maxMb = std::max(maxMb, point.nonPagedPoolMb * 10);
+        }
+
+        drawSeries([](const LongTermPoint &p) { return p.usedMb; }, QColor("#2563eb"), maxMb);
+        drawSeries([](const LongTermPoint &p) { return p.commitMb; }, QColor("#10b981"), maxMb);
+        drawSeries([](const LongTermPoint &p) { return p.nonPagedPoolMb * 10; }, QColor("#f59e0b"), maxMb);
+
+        painter.setPen(text);
+        painter.drawText(18, rect().bottom() - 10, ko("파랑 RAM · 초록 커밋 · 주황 Non-Paged Pool x10"));
+        painter.setPen(muted);
+        painter.drawText(rect().adjusted(18, 0, -18, -10), Qt::AlignRight | Qt::AlignBottom,
+                         ko("%1개 기록").arg(points.size()));
+    }
+
+private:
+    QVector<LongTermPoint> points;
+    bool darkMode = false;
 };
 
 static MemorySnapshot readMemory() {
@@ -423,7 +509,7 @@ public:
         controlLayout->setHorizontalSpacing(12);
         controlLayout->setVerticalSpacing(7);
 
-        autoTune = new QCheckBox(ko("1시간 임시 학습 + 하루 정식 학습 기준 사용"));
+        autoTune = new QCheckBox(ko("PC에 맞춰 자동 기준 학습"));
         autoTune->setChecked(true);
 
         threshold = new QSpinBox();
@@ -433,10 +519,10 @@ public:
         threshold->setEnabled(false);
 
         action = new QComboBox();
-        action->addItems({ko("자동 정리"), ko("알림만")});
+        action->addItems({ko("자동 정리"), ko("알림만 표시")});
 
         usageMode = new QComboBox();
-        usageMode->addItems({ko("일반 PC"), ko("서버/개발")});
+        usageMode->addItems({ko("일반 PC"), ko("집 서버/개발 PC")});
         usageMode->setCurrentIndex(1);
 
         themeMode = new QComboBox();
@@ -445,13 +531,14 @@ public:
         startButton = new QPushButton(ko("보호 중지"));
         startButton->setObjectName("primaryButton");
 
-        reportButton = new QPushButton(ko("오늘 리포트 보기"));
+        reportButton = new QPushButton(ko("오늘 리포트"));
+        trendButton = new QPushButton(ko("장기 추세"));
         updateButton = new QPushButton(ko("업데이트 확인"));
 
-        controlLayout->addWidget(autoTune, 0, 0, 1, 4);
-        controlLayout->addWidget(new QLabel(ko("기준값")), 1, 0);
-        controlLayout->addWidget(new QLabel(ko("자동 처리")), 1, 1);
-        controlLayout->addWidget(new QLabel(ko("사용 모드")), 1, 2);
+        controlLayout->addWidget(autoTune, 0, 0, 1, 3);
+        controlLayout->addWidget(new QLabel(ko("정리 기준")), 1, 0);
+        controlLayout->addWidget(new QLabel(ko("정리 방식")), 1, 1);
+        controlLayout->addWidget(new QLabel(ko("운영 모드")), 1, 2);
         controlLayout->addWidget(new QLabel(ko("화면 모드")), 1, 3);
         controlLayout->addWidget(threshold, 2, 0);
         controlLayout->addWidget(action, 2, 1);
@@ -459,7 +546,8 @@ public:
         controlLayout->addWidget(themeMode, 2, 3);
         controlLayout->addWidget(startButton, 2, 4);
         controlLayout->addWidget(reportButton, 2, 5);
-        controlLayout->addWidget(updateButton, 2, 6);
+        controlLayout->addWidget(trendButton, 2, 6);
+        controlLayout->addWidget(updateButton, 2, 7);
         controlLayout->setColumnMinimumWidth(0, 82);
         controlLayout->setColumnMinimumWidth(1, 112);
         controlLayout->setColumnMinimumWidth(2, 120);
@@ -467,6 +555,7 @@ public:
         controlLayout->setColumnStretch(3, 1);
         controlLayout->setColumnStretch(5, 1);
         controlLayout->setColumnStretch(6, 1);
+        controlLayout->setColumnStretch(7, 1);
         root->addWidget(controls);
 
         auto *reportPanel = new QFrame();
@@ -559,11 +648,14 @@ public:
         root->addLayout(lowerLayout, 1);
 
         timer.setInterval(2000);
+        loadUiSettings();
+
         connect(&timer, &QTimer::timeout, this, [this] { sample(); });
         connect(startButton, &QPushButton::clicked, this, [this] { toggle(); });
         connect(autoTune, &QCheckBox::toggled, this, [this](bool checked) {
             threshold->setEnabled(!checked);
             appendLog(checked ? ko("PC 맞춤 자동 기준을 사용합니다.") : ko("수동 정리 기준을 사용합니다."));
+            saveUiSettings();
         });
         connect(usageMode, &QComboBox::currentIndexChanged, this, [this] {
             appendLog(usageMode->currentIndex() == 1
@@ -572,15 +664,26 @@ public:
             if (!autoTune->isChecked()) {
                 threshold->setValue(usageMode->currentIndex() == 1 ? 74 : 80);
             }
+            saveUiSettings();
         });
+        connect(threshold, QOverload<int>::of(&QSpinBox::valueChanged), this, [this] {
+            if (!autoTune->isChecked()) {
+                saveUiSettings();
+            }
+        });
+        connect(action, &QComboBox::currentIndexChanged, this, [this] { saveUiSettings(); });
         connect(reportButton, &QPushButton::clicked, this, [this] {
             writeDailyReport();
             showDailyReportDialog();
+        });
+        connect(trendButton, &QPushButton::clicked, this, [this] {
+            showLongTermTrendDialog();
         });
         connect(updateButton, &QPushButton::clicked, this, [this] {
             checkForUpdates(false);
         });
         connect(themeMode, &QComboBox::currentIndexChanged, this, [this] {
+            saveUiSettings();
             applyStyle();
         });
 
@@ -667,6 +770,7 @@ private:
     QComboBox *themeMode = nullptr;
     QPushButton *startButton = nullptr;
     QPushButton *reportButton = nullptr;
+    QPushButton *trendButton = nullptr;
     QPushButton *updateButton = nullptr;
     QTextEdit *topProcesses = nullptr;
     QTextEdit *log = nullptr;
@@ -1125,6 +1229,33 @@ private:
         }
     }
 
+    void loadUiSettings() {
+        QSettings settings(reportDir() + "/profile.ini", QSettings::IniFormat);
+        settings.beginGroup("ui");
+        autoTune->setChecked(settings.value("autoTune", true).toBool());
+        threshold->setValue(std::clamp(settings.value("manualThreshold", threshold->value()).toInt(), 50, 98));
+        action->setCurrentIndex(std::clamp(settings.value("cleanupAction", action->currentIndex()).toInt(), 0, action->count() - 1));
+        usageMode->setCurrentIndex(std::clamp(settings.value("usageMode", usageMode->currentIndex()).toInt(), 0, usageMode->count() - 1));
+        themeMode->setCurrentIndex(std::clamp(settings.value("themeMode", themeMode->currentIndex()).toInt(), 0, themeMode->count() - 1));
+        settings.endGroup();
+        threshold->setEnabled(!autoTune->isChecked());
+    }
+
+    void saveUiSettings() {
+        if (!autoTune || !threshold || !action || !usageMode || !themeMode) {
+            return;
+        }
+        QSettings settings(reportDir() + "/profile.ini", QSettings::IniFormat);
+        settings.beginGroup("ui");
+        settings.setValue("autoTune", autoTune->isChecked());
+        settings.setValue("manualThreshold", threshold->value());
+        settings.setValue("cleanupAction", action->currentIndex());
+        settings.setValue("usageMode", usageMode->currentIndex());
+        settings.setValue("themeMode", themeMode->currentIndex());
+        settings.endGroup();
+        settings.sync();
+    }
+
     void saveLearnedProfile(int value) {
         QSettings settings(reportDir() + "/profile.ini", QSettings::IniFormat);
         settings.setValue("learnedThreshold", value);
@@ -1540,6 +1671,143 @@ private:
                 background: white; border: 1px solid #dae1eb; border-radius: 14px; padding: 14px;
             }
             QPushButton { min-height: 36px; background: white; border: 1px solid #d7dee9; border-radius: 9px; padding: 0 16px; }
+        )");
+
+        dialog->exec();
+        dialog->deleteLater();
+    }
+
+    QVector<LongTermPoint> loadLongTermPoints(int hoursBack) const {
+        QVector<LongTermPoint> result;
+        QFile file(longTermTrendPath());
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return result;
+        }
+
+        QDateTime cutoff = QDateTime::currentDateTime().addSecs(-hoursBack * 3600);
+        QTextStream in(&file);
+        bool first = true;
+        while (!in.atEnd()) {
+            QString line = in.readLine().trimmed();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (first) {
+                first = false;
+                if (line.startsWith("time,")) {
+                    continue;
+                }
+            }
+
+            QStringList parts = line.split(',');
+            if (parts.size() < 9) {
+                continue;
+            }
+
+            LongTermPoint point;
+            point.time = QDateTime::fromString(parts[0], Qt::ISODate);
+            if (!point.time.isValid() || point.time < cutoff) {
+                continue;
+            }
+            point.load = parts[1].toInt();
+            point.usedMb = parts[2].toULongLong();
+            point.commitMb = parts[3].toULongLong();
+            point.nonPagedPoolMb = parts[7].toULongLong();
+            point.pagedPoolMb = parts[8].toULongLong();
+            result.push_back(point);
+        }
+        return result;
+    }
+
+    QString longTermSummary(const QVector<LongTermPoint> &points) const {
+        if (points.isEmpty()) {
+            return ko("아직 장기 추세 데이터가 없습니다. 5분마다 자동 저장됩니다.");
+        }
+
+        const LongTermPoint &first = points.first();
+        const LongTermPoint &last = points.last();
+        qint64 ramDelta = qint64(last.usedMb) - qint64(first.usedMb);
+        qint64 commitDelta = qint64(last.commitMb) - qint64(first.commitMb);
+        qint64 nonPagedDelta = qint64(last.nonPagedPoolMb) - qint64(first.nonPagedPoolMb);
+        return ko("기록 %1개 · RAM %2%3 MB · 커밋 %4%5 MB · Non-Paged Pool %6%7 MB")
+            .arg(points.size())
+            .arg(ramDelta >= 0 ? "+" : "")
+            .arg(ramDelta)
+            .arg(commitDelta >= 0 ? "+" : "")
+            .arg(commitDelta)
+            .arg(nonPagedDelta >= 0 ? "+" : "")
+            .arg(nonPagedDelta);
+    }
+
+    void showLongTermTrendDialog() {
+        auto *dialog = new QDialog(this);
+        dialog->setWindowTitle(ko("장기 메모리 추세"));
+        dialog->resize(860, 520);
+
+        auto *layout = new QVBoxLayout(dialog);
+        layout->setContentsMargins(24, 22, 24, 22);
+        layout->setSpacing(14);
+
+        auto *header = new QHBoxLayout();
+        auto *titleLabel = new QLabel(ko("장기 메모리 추세"));
+        titleLabel->setStyleSheet("font-size: 24px; font-weight: 800;");
+        auto *range = new QComboBox();
+        range->addItems({ko("1시간"), ko("24시간"), ko("7일"), ko("30일")});
+        range->setCurrentIndex(1);
+        header->addWidget(titleLabel, 1);
+        header->addWidget(range);
+        layout->addLayout(header);
+
+        auto *summaryLabel = new QLabel();
+        summaryLabel->setWordWrap(true);
+        summaryLabel->setStyleSheet("color: #94a3b8;");
+        layout->addWidget(summaryLabel);
+
+        auto *chart = new LongTermChartWidget(dialog);
+        chart->setObjectName("reportChart");
+        layout->addWidget(chart, 1);
+
+        auto refresh = [this, range, chart, summaryLabel] {
+            int hours = 24;
+            if (range->currentIndex() == 0) {
+                hours = 1;
+            } else if (range->currentIndex() == 2) {
+                hours = 24 * 7;
+            } else if (range->currentIndex() == 3) {
+                hours = 24 * 30;
+            }
+            QVector<LongTermPoint> points = loadLongTermPoints(hours);
+            chart->setPoints(points, darkModeEnabled());
+            summaryLabel->setText(longTermSummary(points));
+        };
+        connect(range, &QComboBox::currentIndexChanged, dialog, refresh);
+        refresh();
+
+        auto *buttons = new QHBoxLayout();
+        buttons->addStretch();
+        auto *openFileButton = new QPushButton(ko("기록 파일 열기"));
+        auto *closeButton = new QPushButton(ko("닫기"));
+        buttons->addWidget(openFileButton);
+        buttons->addWidget(closeButton);
+        layout->addLayout(buttons);
+
+        connect(openFileButton, &QPushButton::clicked, dialog, [this] {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(longTermTrendPath()));
+        });
+        connect(closeButton, &QPushButton::clicked, dialog, &QDialog::accept);
+
+        dialog->setStyleSheet(darkModeEnabled() ? R"(
+            QDialog { background: #0f172a; color: #e5e7eb; font-family: "Malgun Gothic"; }
+            LongTermChartWidget#reportChart {
+                background: #111827; border: 1px solid #243244; border-radius: 14px; padding: 14px;
+            }
+            QPushButton, QComboBox { min-height: 36px; background: #111827; color: #e5e7eb; border: 1px solid #334155; border-radius: 9px; padding: 0 16px; }
+        )" : R"(
+            QDialog { background: #f6f8fb; color: #111827; font-family: "Malgun Gothic"; }
+            LongTermChartWidget#reportChart {
+                background: white; border: 1px solid #dae1eb; border-radius: 14px; padding: 14px;
+            }
+            QPushButton, QComboBox { min-height: 36px; background: white; border: 1px solid #d7dee9; border-radius: 9px; padding: 0 16px; }
         )");
 
         dialog->exec();
@@ -2242,6 +2510,7 @@ int main(int argc, char *argv[]) {
 
     return app.exec();
 }
+
 
 
 
