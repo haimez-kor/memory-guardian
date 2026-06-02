@@ -448,12 +448,12 @@ public:
         reportDate = QDate::currentDate();
         loadLearnedProfile();
         setWindowTitle(ko("메모리 자동 보호기"));
-        setMinimumSize(1000, 720);
-        resize(1040, 780);
+        setMinimumSize(980, 700);
+        resize(1040, 790);
 
         auto *root = new QVBoxLayout(this);
-        root->setContentsMargins(24, 22, 24, 22);
-        root->setSpacing(14);
+        root->setContentsMargins(22, 18, 22, 18);
+        root->setSpacing(12);
 
         auto *header = new QHBoxLayout();
         auto *titleGroup = new QVBoxLayout();
@@ -474,12 +474,12 @@ public:
         auto *hero = new QFrame();
         hero->setObjectName("hero");
         auto *heroLayout = new QVBoxLayout(hero);
-        heroLayout->setContentsMargins(24, 18, 24, 18);
-        heroLayout->setSpacing(12);
+        heroLayout->setContentsMargins(24, 20, 24, 18);
+        heroLayout->setSpacing(14);
 
         auto *metrics = new QHBoxLayout();
         metrics->setContentsMargins(0, 0, 0, 0);
-        metrics->setSpacing(28);
+        metrics->setSpacing(22);
         ramPercent = new QLabel("0%");
         qiScore = new QLabel(ko("100점"));
         adaptiveValue = new QLabel("80%");
@@ -576,8 +576,8 @@ public:
         reportLayout->addWidget(todayAverage, 0, 0);
         reportLayout->addWidget(todayPeak, 0, 1);
         reportLayout->addWidget(busyHour, 0, 2);
-        reportLayout->addWidget(leakStatus, 0, 3);
-        reportLayout->addWidget(optimizeCountLabel, 0, 4);
+        reportLayout->addWidget(optimizeCountLabel, 0, 3);
+        reportLayout->addWidget(leakStatus, 1, 0, 1, 4);
         for (int i = 0; i < 5; ++i) {
             reportLayout->setColumnStretch(i, 1);
         }
@@ -613,7 +613,7 @@ public:
         topProcesses = new QTextEdit();
         topProcesses->setObjectName("log");
         topProcesses->setReadOnly(true);
-        topProcesses->setMinimumHeight(164);
+        topProcesses->setMinimumHeight(118);
         topProcesses->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         topProcesses->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         processLayout->addWidget(processTitle);
@@ -640,7 +640,7 @@ public:
         log = new QTextEdit();
         log->setObjectName("log");
         log->setReadOnly(true);
-        log->setMinimumHeight(164);
+        log->setMinimumHeight(118);
         log->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         log->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         rightStack->addWidget(log, 1);
@@ -807,20 +807,19 @@ private:
 
     QWidget *makeMetric(const QString &labelText, QLabel *value) {
         auto *box = new QWidget();
-        box->setMinimumHeight(72);
+        box->setMinimumHeight(88);
         auto *layout = new QVBoxLayout(box);
         layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(2);
+        layout->setSpacing(6);
 
         auto *label = new QLabel(labelText);
         label->setObjectName("metricLabel");
-        label->setMinimumHeight(18);
+        label->setMinimumHeight(20);
         value->setObjectName("metricValue");
-        value->setMinimumHeight(42);
+        value->setMinimumHeight(54);
         value->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         layout->addWidget(label);
         layout->addWidget(value);
-        layout->addStretch(1);
         return box;
     }
 
