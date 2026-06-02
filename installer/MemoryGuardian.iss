@@ -1,5 +1,5 @@
 ﻿#define AppName "Memory Guardian"
-#define AppVersion "1.3.1"
+#define AppVersion "1.3.2"
 #define AppPublisher "HAIMEZ"
 #define AppURL "https://github.com/haimez-kor/memory-guardian"
 
@@ -38,7 +38,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startup"; Description: "Start Memory Guardian in the background when Windows starts"; GroupDescription: "Startup"
 
 [Files]
-Source: "..\dist-app-v1.3.1\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist-app-v1.3.2\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
 Type: files; Name: "{app}\MemoryGuardian.exe"
@@ -63,10 +63,22 @@ Name: "{commondesktop}\Memory Guardian"; Filename: "{app}\MemoryGuardian.exe"; W
 
 [Run]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""Memory Guardian Background Protection"" /SC ONLOGON /RL HIGHEST /TR ""\""{app}\MemoryGuardian.exe\"" --background"""; Flags: runhidden; Tasks: startup
-Filename: "{app}\MemoryGuardian.exe"; Description: "Launch Memory Guardian"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\MemoryGuardian.exe"; Description: "Memory Guardian 실행"; Flags: nowait postinstall; Check: IsInteractiveInstall
+Filename: "{app}\MemoryGuardian.exe"; Flags: nowait; Check: IsSilentInstall
 
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""Memory Guardian Background Protection"""; Flags: runhidden; RunOnceId: "RemoveStartupTask"
+
+[Code]
+function IsInteractiveInstall: Boolean;
+begin
+  Result := not WizardSilent;
+end;
+
+function IsSilentInstall: Boolean;
+begin
+  Result := WizardSilent;
+end;
 
 
 
