@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.2.1"
+$version = "v1.3.0"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Improves the daily report with commit/pagefile limits, separate pool metrics, process growth TOP list, and chart tooltips showing RAM percent and MB by hour."
+    notes = "Adds server health cards, Tailscale/Cloudflare process checks, public port/RDP visibility checks, reboot recommendation signals, and long-term memory trend storage."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,7 +42,7 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.2.1
+## Memory Guardian 1.3.0
 
 - Add commit memory, page file, Non-Paged Pool, and Paged Pool tracking
 - Show top RAM processes with today's growth amount
@@ -56,10 +56,10 @@ $notes = @"
 - Add process detail view with PID, start memory, current memory, growth amount, and MB per hour
 - Label processes as normal pattern, warning, or leak suspected
 - Save process growth speed and pattern labels to CSV and daily reports
-- Show commit memory and page file usage with their limits
-- Split Non-Paged Pool and Paged Pool into separate report cards
-- Add today's highest growth process list to the report
-- Add chart tooltips with hour, RAM percent, and MB
+- Add server health cards for Node.js, Python, Java, Tailscale, and Cloudflare
+- Add security visibility for remote management, public listening ports, and public RDP
+- Add reboot recommendation signals for high kernel/commit memory pressure
+- Save long-term memory trends every 5 minutes for future 7-day and 30-day views
 - Keep SHA-256 update verification metadata for corruption/tamper checks
 
 SHA-256:
@@ -75,10 +75,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.2.1" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.0" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.2.1" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.0" --notes $notes --latest
 }
 
 Write-Host ""
@@ -86,6 +86,7 @@ Write-Host "Done." -ForegroundColor Green
 Write-Host "https://github.com/haimez-kor/memory-guardian/releases/tag/$version"
 Write-Host ""
 Read-Host "Press Enter to close"
+
 
 
 

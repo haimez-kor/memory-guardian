@@ -1,7 +1,8 @@
 ﻿{
-    "version":  "1.2.1",
+    "version":  "1.3.0",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
     "sha256":  "AE6035C971F375CBDADDFC8220F4EF5CBF0E50042157E0A435D18C913C8266DF",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Improves the daily report with commit/pagefile limits, separate pool metrics, process growth TOP list, and chart tooltips showing RAM percent and MB by hour."
+    "notes":  "Adds server health cards, Tailscale/Cloudflare process checks, public port/RDP visibility checks, reboot recommendation signals, and long-term memory trend storage."
 }
+

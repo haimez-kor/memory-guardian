@@ -7,7 +7,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.2.1";
+static const char *APP_VERSION = "1.3.0";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -107,6 +107,14 @@ struct ProcessTrend {
     quint64 lastMb = 0;
     QDateTime firstSeen;
     QDateTime lastSeen;
+};
+
+struct ServerProcessSummary {
+    int node = 0;
+    int python = 0;
+    int java = 0;
+    bool tailscale = false;
+    bool cloudflare = false;
 };
 
 class HourChartWidget : public QWidget {
@@ -486,6 +494,23 @@ public:
         }
         root->addWidget(reportPanel);
 
+        auto *serverPanel = new QFrame();
+        serverPanel->setObjectName("panel");
+        auto *serverLayout = new QHBoxLayout(serverPanel);
+        serverLayout->setContentsMargins(20, 12, 20, 12);
+        serverLayout->setSpacing(18);
+        serverStatus = new QLabel(ko("서버 상태를 확인하는 중입니다."));
+        securityStatus = new QLabel(ko("보안 상태를 확인하는 중입니다."));
+        rebootStatus = new QLabel(ko("재부팅 권장: 확인 중"));
+        for (QLabel *label : {serverStatus, securityStatus, rebootStatus}) {
+            label->setWordWrap(true);
+            label->setObjectName("serverCard");
+        }
+        serverLayout->addWidget(serverStatus, 2);
+        serverLayout->addWidget(securityStatus, 2);
+        serverLayout->addWidget(rebootStatus, 1);
+        root->addWidget(serverPanel);
+
         auto *lowerLayout = new QHBoxLayout();
         lowerLayout->setSpacing(14);
 
@@ -630,6 +655,9 @@ private:
     QLabel *busyHour = nullptr;
     QLabel *leakStatus = nullptr;
     QLabel *optimizeCountLabel = nullptr;
+    QLabel *serverStatus = nullptr;
+    QLabel *securityStatus = nullptr;
+    QLabel *rebootStatus = nullptr;
     QLabel *processDetail = nullptr;
     QProgressBar *meter = nullptr;
     QCheckBox *autoTune = nullptr;
@@ -651,6 +679,8 @@ private:
     QDate reportDate;
     qint64 lastOptimizeMs = 0;
     qint64 lastProcessCsvMs = 0;
+    qint64 lastTrendCsvMs = 0;
+    qint64 lastSecurityScanMs = 0;
     qint64 optimizeSuppressedUntilMs = 0;
     bool running = true;
     int adaptiveThreshold = 80;
@@ -668,6 +698,8 @@ private:
     bool startedInBackground = false;
     bool startupUpdateChecked = false;
     bool optimizeEffectPending = false;
+    bool cachedPublicPort = false;
+    bool cachedPublicRdp = false;
 
     QWidget *makeMetric(const QString &labelText, QLabel *value) {
         auto *box = new QWidget();
@@ -704,6 +736,10 @@ private:
 
     QString todayProcessCsvPath() const {
         return reportDir() + "/" + reportDate.toString("yyyy-MM-dd") + "-processes.csv";
+    }
+
+    QString longTermTrendPath() const {
+        return reportDir() + "/long-term-trends.csv";
     }
 
     bool fetchUrl(const QUrl &url, QByteArray *payload, QString *errorText) {
@@ -862,6 +898,8 @@ private:
         updateProcessDetail();
         appendCsv(snapshot, qi, activeThreshold);
         appendProcessCsv(processes, snapshot.time);
+        appendLongTermTrend(snapshot);
+        updateServerHealthCards(snapshot, processes);
 
         qint64 now = QDateTime::currentMSecsSinceEpoch();
         checkOptimizeEffect(snapshot, now);
@@ -946,6 +984,66 @@ private:
         totalLoadSum += snapshot.load;
         totalUsedSum += snapshot.usedMb;
         peakLoad = std::max(peakLoad, snapshot.load);
+    }
+
+    ServerProcessSummary summarizeServerProcesses(const QVector<ProcessUsage> &processes) const {
+        ServerProcessSummary summary;
+        for (const ProcessUsage &process : processes) {
+            QString name = process.name.toLower();
+            if (name == "node.exe" || name == "node") {
+                summary.node++;
+            } else if (name == "python.exe" || name == "pythonw.exe" || name == "python") {
+                summary.python++;
+            } else if (name == "java.exe" || name == "javaw.exe" || name == "java") {
+                summary.java++;
+            } else if (name.contains("tailscale")) {
+                summary.tailscale = true;
+            } else if (name.contains("cloudflared")) {
+                summary.cloudflare = true;
+            }
+        }
+        return summary;
+    }
+
+    QString commandOutput(const QString &program, const QStringList &arguments, int timeoutMs = 1500) const {
+        QProcess process;
+        process.start(program, arguments);
+        if (!process.waitForFinished(timeoutMs)) {
+            process.kill();
+            process.waitForFinished(300);
+            return QString();
+        }
+        return QString::fromLocal8Bit(process.readAllStandardOutput());
+    }
+
+    bool hasPublicListenPort() const {
+        QString output = commandOutput("netstat", {"-ano", "-p", "tcp"});
+        const QStringList lines = output.split('\n');
+        for (const QString &rawLine : lines) {
+            QString line = rawLine.simplified();
+            if (!line.contains("LISTENING")) {
+                continue;
+            }
+            if (line.startsWith("TCP 0.0.0.0:") || line.startsWith("TCP [::]:")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool hasPublicRdp() const {
+        QString output = commandOutput("netstat", {"-ano", "-p", "tcp"});
+        const QStringList lines = output.split('\n');
+        for (const QString &rawLine : lines) {
+            QString line = rawLine.simplified();
+            if (!line.contains("LISTENING")) {
+                continue;
+            }
+            if (line.startsWith("TCP 0.0.0.0:3389") || line.startsWith("TCP [::]:3389")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     int calculateAdaptiveThreshold(quint64 totalMb) const {
@@ -1259,6 +1357,34 @@ private:
                                    .arg(deltaText)
                                    .arg(speedText)
                                    .arg(pattern));
+    }
+
+    void updateServerHealthCards(const MemorySnapshot &snapshot, const QVector<ProcessUsage> &processes) {
+        ServerProcessSummary server = summarizeServerProcesses(processes);
+        serverStatus->setText(ko("<b>서버 상태</b><br>Node.js %1개<br>Python %2개<br>Java %3개<br>Tailscale %4<br>Cloudflare %5")
+                                  .arg(server.node)
+                                  .arg(server.python)
+                                  .arg(server.java)
+                                  .arg(server.tailscale ? ko("정상") : ko("없음"))
+                                  .arg(server.cloudflare ? ko("정상") : ko("없음")));
+
+        qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - lastSecurityScanMs > 60000) {
+            cachedPublicPort = hasPublicListenPort();
+            cachedPublicRdp = hasPublicRdp();
+            lastSecurityScanMs = now;
+        }
+        securityStatus->setText(ko("<b>보안 상태</b><br>원격 관리: %1<br>직접 공개 포트: %2<br>RDP 공개: %3")
+                                    .arg(server.tailscale ? ko("Tailscale") : ko("확인 필요"))
+                                    .arg(cachedPublicPort ? ko("있음") : ko("없음"))
+                                    .arg(cachedPublicRdp ? ko("있음") : ko("없음")));
+
+        bool rebootRecommended = snapshot.nonPagedPoolMb >= 2048
+                                 || snapshot.pagedPoolMb >= 3072
+                                 || (snapshot.commitLimitMb > 0 && snapshot.commitMb * 100 / snapshot.commitLimitMb >= 90);
+        rebootStatus->setText(rebootRecommended
+                                  ? ko("<b>재부팅 권장</b><br>커널/커밋 메모리가 높습니다.<br>서버 작업을 저장한 뒤 점검하세요.")
+                                  : ko("<b>재부팅 권장</b><br>현재는 필요 없음"));
     }
 
     int heaviestHour() const {
@@ -1751,6 +1877,34 @@ private:
         }
     }
 
+    void appendLongTermTrend(const MemorySnapshot &snapshot) {
+        qint64 now = snapshot.time.toMSecsSinceEpoch();
+        if (lastTrendCsvMs > 0 && now - lastTrendCsvMs < 5 * 60 * 1000) {
+            return;
+        }
+        lastTrendCsvMs = now;
+
+        QFile file(longTermTrendPath());
+        bool fresh = !file.exists();
+        if (!file.open(QIODevice::Append | QIODevice::Text)) {
+            return;
+        }
+
+        QTextStream out(&file);
+        if (fresh) {
+            out << "time,load_percent,used_mb,commit_mb,commit_limit_mb,page_file_used_mb,page_file_total_mb,non_paged_pool_mb,paged_pool_mb\n";
+        }
+        out << snapshot.time.toString(Qt::ISODate) << ','
+            << snapshot.load << ','
+            << snapshot.usedMb << ','
+            << snapshot.commitMb << ','
+            << snapshot.commitLimitMb << ','
+            << snapshot.pageFileUsedMb << ','
+            << snapshot.pageFileTotalMb << ','
+            << snapshot.nonPagedPoolMb << ','
+            << snapshot.pagedPoolMb << '\n';
+    }
+
     void writeDailyReport() {
         QFile file(todayReportPath());
         if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -1910,6 +2064,10 @@ private:
                 color: #cbd5e1;
                 selection-background-color: #1e40af;
             }
+            QLabel#serverCard, QLabel#processDetail {
+                color: #cbd5e1;
+                line-height: 20px;
+            }
             QScrollBar:vertical {
                 background: transparent;
                 width: 10px;
@@ -2003,6 +2161,10 @@ private:
                 color: #334155;
                 selection-background-color: #dbeafe;
             }
+            QLabel#serverCard, QLabel#processDetail {
+                color: #334155;
+                line-height: 20px;
+            }
             QScrollBar:vertical {
                 background: transparent;
                 width: 10px;
@@ -2080,6 +2242,7 @@ int main(int argc, char *argv[]) {
 
     return app.exec();
 }
+
 
 
 
