@@ -588,9 +588,9 @@ public:
         auto *serverLayout = new QHBoxLayout(serverPanel);
         serverLayout->setContentsMargins(20, 12, 20, 12);
         serverLayout->setSpacing(18);
-        serverStatus = new QLabel(ko("서버 상태를 확인하는 중입니다."));
-        securityStatus = new QLabel(ko("보안 상태를 확인하는 중입니다."));
-        rebootStatus = new QLabel(ko("재부팅 권장: 확인 중"));
+        serverStatus = new QLabel(ko("서버 프로그램을 확인하는 중입니다."));
+        securityStatus = new QLabel(ko("원격 접속 상태를 확인하는 중입니다."));
+        rebootStatus = new QLabel(ko("재부팅 필요 여부를 확인하는 중입니다."));
         for (QLabel *label : {serverStatus, securityStatus, rebootStatus}) {
             label->setWordWrap(true);
             label->setObjectName("serverCard");
@@ -1491,7 +1491,11 @@ private:
 
     void updateServerHealthCards(const MemorySnapshot &snapshot, const QVector<ProcessUsage> &processes) {
         ServerProcessSummary server = summarizeServerProcesses(processes);
-        serverStatus->setText(ko("<b>서버 상태</b><br>Node.js %1개<br>Python %2개<br>Java %3개<br>Tailscale %4<br>Cloudflare %5")
+        QString serverDetected = (server.node + server.python + server.java) > 0
+                                     ? ko("감지됨")
+                                     : ko("감지 안 됨");
+        serverStatus->setText(ko("<b>서버 프로그램 감지</b><br>상태: %1<br>Node 서버 %2개 · Python %3개 · Java %4개<br>원격망: Tailscale %5<br>터널: Cloudflare %6")
+                                  .arg(serverDetected)
                                   .arg(server.node)
                                   .arg(server.python)
                                   .arg(server.java)
@@ -1504,17 +1508,19 @@ private:
             cachedPublicRdp = hasPublicRdp();
             lastSecurityScanMs = now;
         }
-        securityStatus->setText(ko("<b>보안 상태</b><br>원격 관리: %1<br>직접 공개 포트: %2<br>RDP 공개: %3")
+        QString portText = cachedPublicPort ? ko("열린 포트 있음") : ko("없음");
+        QString rdpText = cachedPublicRdp ? ko("주의 필요") : ko("없음");
+        securityStatus->setText(ko("<b>원격 접속 점검</b><br>안전한 원격망: %1<br>외부 노출 의심 포트: %2<br>RDP 원격 데스크톱: %3")
                                     .arg(server.tailscale ? ko("Tailscale") : ko("확인 필요"))
-                                    .arg(cachedPublicPort ? ko("있음") : ko("없음"))
-                                    .arg(cachedPublicRdp ? ko("있음") : ko("없음")));
+                                    .arg(portText)
+                                    .arg(rdpText));
 
         bool rebootRecommended = snapshot.nonPagedPoolMb >= 2048
                                  || snapshot.pagedPoolMb >= 3072
                                  || (snapshot.commitLimitMb > 0 && snapshot.commitMb * 100 / snapshot.commitLimitMb >= 90);
         rebootStatus->setText(rebootRecommended
-                                  ? ko("<b>재부팅 권장</b><br>커널/커밋 메모리가 높습니다.<br>서버 작업을 저장한 뒤 점검하세요.")
-                                  : ko("<b>재부팅 권장</b><br>현재는 필요 없음"));
+                                  ? ko("<b>재부팅 판단</b><br>권장됨<br>커널/커밋 메모리가 높습니다.")
+                                  : ko("<b>재부팅 판단</b><br>필요 없음<br>현재 수치는 안정적입니다."));
     }
 
     int heaviestHour() const {
