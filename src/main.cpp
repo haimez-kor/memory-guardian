@@ -7,7 +7,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.2";
+static const char *APP_VERSION = "1.3.3";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);

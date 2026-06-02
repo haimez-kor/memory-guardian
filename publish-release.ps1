@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.2"
+$version = "v1.3.3"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Restarts Memory Guardian automatically after silent updates, keeps the Finish-screen launch checkbox for normal installs, and preserves settings/data during reinstall updates."
+    notes = "Polishes the startup window layout so top metrics no longer overlap, keeps auto-update restart behavior, and preserves settings/data during reinstall updates."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,8 +42,11 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.2
+## Memory Guardian 1.3.3
 
+- Polish the startup window layout to prevent metric text from overlapping the progress bar
+- Move long leak suspicion text onto a wider summary row
+- Keep auto-update installs restarting Memory Guardian after completion
 - Restart Memory Guardian automatically after silent auto-update installs
 - Keep a Finish-screen launch checkbox for normal installer runs
 - Add commit memory, page file, Non-Paged Pool, and Paged Pool tracking
@@ -77,10 +80,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.2" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.3" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.2" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.3" --notes $notes --latest
 }
 
 Write-Host ""
