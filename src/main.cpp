@@ -1,13 +1,15 @@
 ﻿#include <QtWidgets>
 #include <QtNetwork>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.3";
+static const char *APP_VERSION = "1.3.4";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -82,6 +84,7 @@ struct MemorySnapshot {
 struct QiState {
     int score = 100;
     int pressure = 0;
+    int available = 0;
     int trend = 0;
     bool shouldOptimize = false;
 };
@@ -236,6 +239,7 @@ class LongTermChartWidget : public QWidget {
 public:
     explicit LongTermChartWidget(QWidget *parent = nullptr) : QWidget(parent) {
         setMinimumHeight(260);
+        setMouseTracking(true);
     }
 
     void setPoints(const QVector<LongTermPoint> &source, bool dark) {
@@ -245,6 +249,38 @@ public:
     }
 
 protected:
+    bool event(QEvent *event) override {
+        if (event->type() == QEvent::ToolTip) {
+            auto *helpEvent = static_cast<QHelpEvent *>(event);
+            int index = pointAt(helpEvent->pos());
+            if (index >= 0 && index < points.size()) {
+                const LongTermPoint &point = points[index];
+                qint64 ramDelta = qint64(point.usedMb) - qint64(points.first().usedMb);
+                qint64 commitDelta = qint64(point.commitMb) - qint64(points.first().commitMb);
+                qint64 poolDelta = qint64(point.nonPagedPoolMb) - qint64(points.first().nonPagedPoolMb);
+                QToolTip::showText(helpEvent->globalPos(),
+                                   ko("%1\nRAM %2% · %3 MB (%4%5 MB)\n커밋 %6 MB (%7%8 MB)\nNon-Paged Pool %9 MB (%10%11 MB)")
+                                       .arg(point.time.toString("yyyy-MM-dd HH:mm"))
+                                       .arg(point.load)
+                                       .arg(point.usedMb)
+                                       .arg(ramDelta >= 0 ? "+" : "")
+                                       .arg(ramDelta)
+                                       .arg(point.commitMb)
+                                       .arg(commitDelta >= 0 ? "+" : "")
+                                       .arg(commitDelta)
+                                       .arg(point.nonPagedPoolMb)
+                                       .arg(poolDelta >= 0 ? "+" : "")
+                                       .arg(poolDelta),
+                                   this);
+            } else {
+                QToolTip::hideText();
+                event->ignore();
+            }
+            return true;
+        }
+        return QWidget::event(event);
+    }
+
     void paintEvent(QPaintEvent *) override {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
@@ -307,6 +343,23 @@ protected:
 private:
     QVector<LongTermPoint> points;
     bool darkMode = false;
+
+    QRect chartArea() const {
+        return rect().adjusted(18, 28, -18, -34);
+    }
+
+    int pointAt(const QPoint &point) const {
+        if (points.size() < 2) {
+            return -1;
+        }
+        QRect area = chartArea();
+        if (!area.adjusted(-8, -16, 8, 16).contains(point)) {
+            return -1;
+        }
+        double ratio = double(point.x() - area.left()) / double(qMax(1, area.width()));
+        int index = int(std::round(std::clamp(ratio, 0.0, 1.0) * double(points.size() - 1)));
+        return std::clamp(index, 0, int(points.size()) - 1);
+    }
 };
 
 static MemorySnapshot readMemory() {
@@ -435,7 +488,8 @@ static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold)
         trendPenalty = std::clamp((int(newest.load) - int(oldest.load)) * 3, 0, 30);
     }
 
-    qi.pressure = pressurePenalty + availablePenalty;
+    qi.pressure = pressurePenalty;
+    qi.available = availablePenalty;
     qi.trend = trendPenalty;
     qi.score = std::clamp(100 - pressurePenalty - availablePenalty - trendPenalty, 0, 100);
     qi.shouldOptimize = newest.load >= DWORD(threshold) || qi.score <= 45;
@@ -483,8 +537,12 @@ public:
         ramPercent = new QLabel("0%");
         qiScore = new QLabel(ko("100점"));
         adaptiveValue = new QLabel("80%");
+        qiHelpButton = new QPushButton("?");
+        qiHelpButton->setObjectName("helpButton");
+        qiHelpButton->setFixedSize(26, 26);
+        qiHelpButton->setToolTip(ko("최적화 점수 계산 기준 보기"));
         metrics->addWidget(makeMetric(ko("현재 RAM 사용률"), ramPercent), 1);
-        metrics->addWidget(makeMetric(ko("최적화 점수"), qiScore), 1);
+        metrics->addWidget(makeMetric(ko("최적화 점수"), qiScore, qiHelpButton), 1);
         metrics->addWidget(makeMetric(ko("자동 정리 기준"), adaptiveValue), 1);
         heroLayout->addLayout(metrics);
 
@@ -523,7 +581,7 @@ public:
 
         usageMode = new QComboBox();
         usageMode->addItems({ko("일반 PC"), ko("집 서버/개발 PC")});
-        usageMode->setCurrentIndex(1);
+        usageMode->setCurrentIndex(0);
 
         themeMode = new QComboBox();
         themeMode->addItems({ko("시스템 설정"), ko("라이트 모드"), ko("다크 모드")});
@@ -583,7 +641,7 @@ public:
         }
         root->addWidget(reportPanel);
 
-        auto *serverPanel = new QFrame();
+        serverPanel = new QFrame();
         serverPanel->setObjectName("panel");
         auto *serverLayout = new QHBoxLayout(serverPanel);
         serverLayout->setContentsMargins(20, 12, 20, 12);
@@ -664,6 +722,7 @@ public:
             if (!autoTune->isChecked()) {
                 threshold->setValue(usageMode->currentIndex() == 1 ? 74 : 80);
             }
+            updateServerPanelVisibility();
             saveUiSettings();
         });
         connect(threshold, QOverload<int>::of(&QSpinBox::valueChanged), this, [this] {
@@ -682,12 +741,16 @@ public:
         connect(updateButton, &QPushButton::clicked, this, [this] {
             checkForUpdates(false);
         });
+        connect(qiHelpButton, &QPushButton::clicked, this, [this] {
+            showQiHelpDialog();
+        });
         connect(themeMode, &QComboBox::currentIndexChanged, this, [this] {
             saveUiSettings();
             applyStyle();
         });
 
         applyStyle();
+        updateServerPanelVisibility();
         setupTray();
         timer.start();
         appendLog(ko("전체 RAM 자동 보호를 시작했습니다."));
@@ -762,6 +825,7 @@ private:
     QLabel *securityStatus = nullptr;
     QLabel *rebootStatus = nullptr;
     QLabel *processDetail = nullptr;
+    QFrame *serverPanel = nullptr;
     QProgressBar *meter = nullptr;
     QCheckBox *autoTune = nullptr;
     QSpinBox *threshold = nullptr;
@@ -772,6 +836,7 @@ private:
     QPushButton *reportButton = nullptr;
     QPushButton *trendButton = nullptr;
     QPushButton *updateButton = nullptr;
+    QPushButton *qiHelpButton = nullptr;
     QTextEdit *topProcesses = nullptr;
     QTextEdit *log = nullptr;
     QSystemTrayIcon *trayIcon = nullptr;
@@ -805,7 +870,7 @@ private:
     bool cachedPublicPort = false;
     bool cachedPublicRdp = false;
 
-    QWidget *makeMetric(const QString &labelText, QLabel *value) {
+    QWidget *makeMetric(const QString &labelText, QLabel *value, QWidget *sideWidget = nullptr) {
         auto *box = new QWidget();
         box->setMinimumHeight(88);
         auto *layout = new QVBoxLayout(box);
@@ -815,10 +880,18 @@ private:
         auto *label = new QLabel(labelText);
         label->setObjectName("metricLabel");
         label->setMinimumHeight(20);
+        auto *labelRow = new QHBoxLayout();
+        labelRow->setContentsMargins(0, 0, 0, 0);
+        labelRow->setSpacing(6);
+        labelRow->addWidget(label);
+        if (sideWidget) {
+            labelRow->addWidget(sideWidget);
+        }
+        labelRow->addStretch(1);
         value->setObjectName("metricValue");
         value->setMinimumHeight(54);
         value->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        layout->addWidget(label);
+        layout->addLayout(labelRow);
         layout->addWidget(value);
         return box;
     }
@@ -1255,6 +1328,59 @@ private:
         settings.sync();
     }
 
+    void updateServerPanelVisibility() {
+        if (!serverPanel || !usageMode) {
+            return;
+        }
+        serverPanel->setVisible(usageMode->currentIndex() == 1);
+    }
+
+    void showQiHelpDialog() {
+        if (samples.isEmpty()) {
+            QMessageBox::information(this,
+                                     ko("최적화 점수 기준"),
+                                     ko("아직 메모리 샘플을 수집하는 중입니다.\n몇 초 뒤 다시 눌러주세요."));
+            return;
+        }
+
+        int activeThreshold = autoTune->isChecked() ? adaptiveThreshold : threshold->value();
+        QiState qi = evaluateQi(samples, activeThreshold);
+        const MemorySnapshot &snapshot = samples.last();
+        QString modeText = usageMode && usageMode->currentIndex() == 1 ? ko("집 서버/개발 PC") : ko("일반 PC");
+        QString actionText = qi.shouldOptimize
+                                 ? ko("현재 기준에서는 자동 정리 또는 알림 대상입니다.")
+                                 : ko("현재 기준에서는 자동 정리 대상이 아닙니다.");
+
+        QMessageBox::information(this,
+                                 ko("최적화 점수 기준"),
+                                 ko("최적화 점수는 100점에서 위험 요소를 빼는 방식입니다.\n\n"
+                                    "현재 점수: %1점\n"
+                                    "운영 모드: %2\n"
+                                    "자동 정리 기준: %3%\n\n"
+                                    "감점 내역\n"
+                                    "- RAM 사용 압박: -%4점\n"
+                                    "- 여유 메모리 부족: -%5점\n"
+                                    "- 최근 RAM 증가 추세: -%6점\n\n"
+                                    "현재 상태\n"
+                                    "- RAM 사용률: %7%\n"
+                                    "- 사용 중 RAM: %8 MB\n"
+                                    "- 여유 RAM: %9 MB\n"
+                                    "- 커밋 메모리: %10 / %11 MB\n\n"
+                                    "%12")
+                                     .arg(qi.score)
+                                     .arg(modeText)
+                                     .arg(activeThreshold)
+                                     .arg(qi.pressure)
+                                     .arg(qi.available)
+                                     .arg(qi.trend)
+                                     .arg(snapshot.load)
+                                     .arg(snapshot.usedMb)
+                                     .arg(snapshot.availableMb)
+                                     .arg(snapshot.commitMb)
+                                     .arg(snapshot.commitLimitMb)
+                                     .arg(actionText));
+    }
+
     void saveLearnedProfile(int value) {
         QSettings settings(reportDir() + "/profile.ini", QSettings::IniFormat);
         settings.setValue("learnedThreshold", value);
@@ -1364,8 +1490,8 @@ private:
 
     double processGrowthPerHour(const ProcessTrend &trend) const {
         qint64 seconds = trend.firstSeen.secsTo(trend.lastSeen);
-        if (seconds <= 0) {
-            return 0.0;
+        if (seconds < 600) {
+            return std::numeric_limits<double>::quiet_NaN();
         }
         qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
         return double(delta) * 3600.0 / double(seconds);
@@ -1375,12 +1501,19 @@ private:
         qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
         double speed = processGrowthPerHour(trend);
         qint64 observedMinutes = std::max<qint64>(1, trend.firstSeen.secsTo(trend.lastSeen) / 60);
+        bool speedReady = std::isfinite(speed);
 
-        if (delta >= 1024 || (observedMinutes >= 30 && speed >= 300.0)) {
+        if (delta >= 1024 || (observedMinutes >= 30 && speedReady && speed >= 300.0)) {
             return ko("누수 의심");
         }
-        if (delta >= 300 || (observedMinutes >= 20 && speed >= 120.0)) {
+        if (delta >= 300 || (observedMinutes >= 20 && speedReady && speed >= 120.0)) {
             return ko("주의");
+        }
+        if (delta < 0) {
+            return ko("감소 중");
+        }
+        if (observedMinutes < 10) {
+            return ko("관찰 중");
         }
         return ko("정상 패턴");
     }
@@ -1392,7 +1525,8 @@ private:
             const ProcessTrend &trend = it.value();
             qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
             double speed = processGrowthPerHour(trend);
-            double score = double(std::max<qint64>(0, delta)) + std::max(0.0, speed) * 0.4 + double(trend.lastMb) * 0.05;
+            double speedScore = std::isfinite(speed) ? std::max(0.0, speed) : 0.0;
+            double score = double(std::max<qint64>(0, delta)) + speedScore * 0.4 + double(trend.lastMb) * 0.05;
             if (score > bestScore) {
                 bestScore = score;
                 best = &it.value();
@@ -1475,8 +1609,10 @@ private:
         qint64 delta = qint64(trend->lastMb) - qint64(trend->firstMb);
         double speed = processGrowthPerHour(*trend);
         QString deltaText = delta >= 0 ? ko("+%1 MB").arg(delta) : ko("%1 MB").arg(delta);
-        QString speedText = speed >= 0.0 ? ko("+%1 MB/h").arg(QString::number(speed, 'f', 0))
-                                         : ko("%1 MB/h").arg(QString::number(speed, 'f', 0));
+        QString speedText = std::isfinite(speed)
+                                ? (speed >= 0.0 ? ko("+%1 MB/h").arg(QString::number(speed, 'f', 0))
+                                                : ko("%1 MB/h").arg(QString::number(speed, 'f', 0)))
+                                : ko("계산 중 (10분 필요)");
         QString pattern = processPatternLabel(*trend);
 
         processDetail->setText(ko("%1\nPID %2\n시작 메모리 %3 MB    현재 메모리 %4 MB\n증가량 %5    증가속도 %6\n판정: %7")
@@ -2138,13 +2274,14 @@ private:
             safeName.replace('"', "\"\"");
             QString key = QString("%1:%2").arg(process.name).arg(process.pid);
             double speed = processTrends.contains(key) ? processGrowthPerHour(processTrends[key]) : 0.0;
+            QString speedValue = std::isfinite(speed) ? QString::number(speed, 'f', 1) : "";
             QString pattern = processTrends.contains(key) ? processPatternLabel(processTrends[key]) : ko("관찰 중");
             out << time.toString(Qt::ISODate) << ','
                 << '"' << safeName << '"' << ','
                 << process.pid << ','
                 << process.usedMb << ','
                 << processDeltaMb(process) << ','
-                << QString::number(speed, 'f', 1) << ','
+                << speedValue << ','
                 << '"' << pattern << '"' << '\n';
             written++;
         }
@@ -2218,14 +2355,16 @@ private:
                 continue;
             }
             double speed = processGrowthPerHour(trend);
-            out << QString("- %1 PID %2: %3 MB -> %4 MB (%5%6 MB, %7 MB/h, %8)\n")
+            QString speedText = std::isfinite(speed) ? QString("%1 MB/h").arg(QString::number(speed, 'f', 0))
+                                                     : ko("증가속도 계산 중");
+            out << QString("- %1 PID %2: %3 MB -> %4 MB (%5%6 MB, %7, %8)\n")
                        .arg(trend.name)
                        .arg(trend.pid)
                        .arg(trend.firstMb)
                        .arg(trend.lastMb)
                        .arg(delta > 0 ? "+" : "")
                        .arg(delta)
-                       .arg(QString::number(speed, 'f', 0))
+                       .arg(speedText)
                        .arg(processPatternLabel(trend));
             listed++;
         }
@@ -2332,6 +2471,18 @@ private:
             QPushButton#primaryButton:hover {
                 background: #1d4ed8;
             }
+            QPushButton#helpButton {
+                min-width: 26px;
+                min-height: 26px;
+                max-width: 26px;
+                max-height: 26px;
+                border-radius: 13px;
+                padding: 0;
+                background: #1e293b;
+                color: #bfdbfe;
+                border: 1px solid #334155;
+                font-weight: 800;
+            }
             QTextEdit#log {
                 padding: 12px;
                 color: #cbd5e1;
@@ -2428,6 +2579,18 @@ private:
             }
             QPushButton#primaryButton:hover {
                 background: #1d4ed8;
+            }
+            QPushButton#helpButton {
+                min-width: 26px;
+                min-height: 26px;
+                max-width: 26px;
+                max-height: 26px;
+                border-radius: 13px;
+                padding: 0;
+                background: #eef4ff;
+                color: #1d4ed8;
+                border: 1px solid #bfdbfe;
+                font-weight: 800;
             }
             QTextEdit#log {
                 padding: 12px;
