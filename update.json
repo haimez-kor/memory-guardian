@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.3.11",
+    "version":  "1.3.12",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "EAAC2CC1DAE090C608E985ABEBE5E7FC9F21DA0AA7C358645FB650F69CB81EF0",
+    "sha256":  "61C09778AED4AB6FE5047D2AF0F0603C6166741F579EA1D334318C24846E5CCE",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Embeds the long-term trend graph in the app page and slows process scanning/refreshing to reduce UI lag."
+    "notes":  "Updates the HAIMEZ shield icon with a larger mark for clearer taskbar, tray, shortcut, and installer branding."
 }
