@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.3.6",
+    "version":  "1.3.7",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "C6EA8B4C4EC6FAA7A8EDC36A53594CB5CE6359603A2A100145CBCC3DB4C2974B",
+    "sha256":  "E8ADA5DE8F66B2679E41B4F934C76E71A39CBFD2D292E119A0FE0563CC55B127",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Shows every readable running process and adds instant process-name/PID search with live result counts."
+    "notes":  "Introduces the official monochrome HAIMEZ shield identity across the app window, taskbar, executable, shortcuts, and installer."
 }
