@@ -6,7 +6,7 @@ set PATH=C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
 call build.bat
 if errorlevel 1 exit /b 1
 
-set DIST=dist-app-v1.3.8
+set DIST=dist-app-v1.3.9
 if exist "%DIST%" rmdir /S /Q "%DIST%"
 mkdir "%DIST%"
 
@@ -19,6 +19,7 @@ copy /Y installer\update.json "%DIST%\update.json" >nul
 copy /Y LICENSE "%DIST%\LICENSE" >nul
 copy /Y USER_AGREEMENT.md "%DIST%\USER_AGREEMENT.md" >nul
 copy /Y USER_AGREEMENT.en.md "%DIST%\USER_AGREEMENT.en.md" >nul
+copy /Y ERROR_REPORTING.md "%DIST%\ERROR_REPORTING.md" >nul
 copy /Y README.md "%DIST%\README.ko.md" >nul
 copy /Y README.en.md "%DIST%\README.en.md" >nul
 

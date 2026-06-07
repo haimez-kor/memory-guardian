@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.8";
+static const char *APP_VERSION = "1.3.9";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -600,6 +600,7 @@ public:
         reportButton = new QPushButton(ko("오늘 리포트"));
         trendButton = new QPushButton(ko("장기 추세"));
         updateButton = new QPushButton(ko("업데이트 확인"));
+        errorReportButton = new QPushButton(ko("오류 신고"));
 
         controlLayout->addWidget(autoTune, 0, 0, 1, 3);
         controlLayout->addWidget(new QLabel(ko("정리 기준")), 1, 0);
@@ -614,6 +615,7 @@ public:
         controlLayout->addWidget(reportButton, 2, 5);
         controlLayout->addWidget(trendButton, 2, 6);
         controlLayout->addWidget(updateButton, 2, 7);
+        controlLayout->addWidget(errorReportButton, 2, 8);
         controlLayout->setColumnMinimumWidth(0, 82);
         controlLayout->setColumnMinimumWidth(1, 112);
         controlLayout->setColumnMinimumWidth(2, 120);
@@ -622,6 +624,7 @@ public:
         controlLayout->setColumnStretch(5, 1);
         controlLayout->setColumnStretch(6, 1);
         controlLayout->setColumnStretch(7, 1);
+        controlLayout->setColumnStretch(8, 1);
         root->addWidget(controls);
 
         auto *reportPanel = new QFrame();
@@ -776,6 +779,9 @@ public:
         connect(updateButton, &QPushButton::clicked, this, [this] {
             checkForUpdates(false);
         });
+        connect(errorReportButton, &QPushButton::clicked, this, [this] {
+            showErrorReportDialog(ko("사용자 오류 신고"), QString());
+        });
         connect(topProcesses, &QTableWidget::cellClicked, this, [this](int, int) {
             updateProcessDetail();
         });
@@ -794,6 +800,8 @@ public:
         applyStyle();
         updateServerPanelVisibility();
         setupTray();
+        checkPreviousCrash();
+        writeRunMarker();
         timer.start();
         appendLog(ko("전체 RAM 자동 보호를 시작했습니다."));
         appendLog(ko("현재 버전: %1").arg(APP_VERSION));
@@ -838,6 +846,7 @@ protected:
 
         if (box.clickedButton() == quitButton) {
             quitRequested = true;
+            clearRunMarker();
             writeDailyReport();
             event->accept();
             qApp->quit();
@@ -879,6 +888,7 @@ private:
     QPushButton *reportButton = nullptr;
     QPushButton *trendButton = nullptr;
     QPushButton *updateButton = nullptr;
+    QPushButton *errorReportButton = nullptr;
     QPushButton *qiHelpButton = nullptr;
     QTableWidget *topProcesses = nullptr;
     QLineEdit *processSearch = nullptr;
@@ -916,6 +926,7 @@ private:
     bool optimizeEffectPending = false;
     bool cachedPublicPort = false;
     bool cachedPublicRdp = false;
+    bool previousCrashPromptShown = false;
 
     QWidget *makeMetric(const QString &labelText, QLabel *value, QWidget *sideWidget = nullptr) {
         auto *box = new QWidget();
@@ -965,6 +976,14 @@ private:
         return reportDir() + "/long-term-trends.csv";
     }
 
+    QString appLogPath() const {
+        return reportDir() + "/app.log";
+    }
+
+    QString runMarkerPath() const {
+        return reportDir() + "/running-session.json";
+    }
+
     bool fetchUrl(const QUrl &url, QByteArray *payload, QString *errorText) {
         if (!url.isValid() || url.scheme().isEmpty()) {
             if (errorText) {
@@ -1000,6 +1019,224 @@ private:
         }
         reply->deleteLater();
         return true;
+    }
+
+    void writeRunMarker() {
+        QJsonObject object;
+        object["app_version"] = QString::fromUtf8(APP_VERSION);
+        object["started_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        object["last_event"] = ko("앱 실행 중");
+        QFile file(runMarkerPath());
+        if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+        }
+    }
+
+    void clearRunMarker() {
+        QFile::remove(runMarkerPath());
+    }
+
+    QString errorReportCode() const {
+        return "MG-" + QDateTime::currentDateTimeUtc().toString("yyyyMMdd-hhmmss");
+    }
+
+    QString recentAppLog(int maxLines = 40) const {
+        QFile file(appLogPath());
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return QString();
+        }
+        QStringList lines = QString::fromUtf8(file.readAll()).split('\n', Qt::SkipEmptyParts);
+        while (lines.size() > maxLines) {
+            lines.removeFirst();
+        }
+        return lines.join('\n');
+    }
+
+    QJsonObject systemSpecObject() const {
+        QJsonObject object;
+        object["os"] = QSysInfo::prettyProductName();
+        object["kernel"] = QSysInfo::kernelType() + " " + QSysInfo::kernelVersion();
+        object["cpu_arch"] = QSysInfo::currentCpuArchitecture();
+        object["logical_cores"] = QThread::idealThreadCount();
+        if (!samples.isEmpty()) {
+            const MemorySnapshot &snapshot = samples.last();
+            object["total_ram_mb"] = QString::number(snapshot.totalMb);
+            object["current_ram_percent"] = int(snapshot.load);
+            object["current_used_ram_mb"] = QString::number(snapshot.usedMb);
+            object["commit_mb"] = QString::number(snapshot.commitMb);
+            object["commit_limit_mb"] = QString::number(snapshot.commitLimitMb);
+            object["page_file_used_mb"] = QString::number(snapshot.pageFileUsedMb);
+            object["page_file_total_mb"] = QString::number(snapshot.pageFileTotalMb);
+            object["non_paged_pool_mb"] = QString::number(snapshot.nonPagedPoolMb);
+            object["paged_pool_mb"] = QString::number(snapshot.pagedPoolMb);
+        }
+        object["admin_mode"] = runningAsAdmin();
+        object["usage_mode"] = usageMode && usageMode->currentIndex() == 1 ? ko("집 서버/개발 PC") : ko("일반 PC");
+        return object;
+    }
+
+    QString includedErrorReportInfoText(const QString &reportCode) const {
+        return ko("전송 대상: https://mg.haimez.kr/api/error-reports\n\n"
+                  "전송되는 정보\n"
+                  "- 오류 코드: %1\n"
+                  "- 앱 버전\n"
+                  "- 사용자가 직접 입력한 연락처, 요약, 상세 설명\n"
+                  "- Windows 버전, CPU 아키텍처, 논리 코어 수\n"
+                  "- 전체 RAM, 현재 RAM 사용률, 커밋 메모리, 페이지 파일, Pool 메모리 수치\n"
+                  "- 관리자 권한 실행 여부, 사용 모드\n"
+                  "- 최근 앱 내부 로그 일부\n\n"
+                  "전송하지 않는 정보\n"
+                  "- 파일 내용, 개인 문서, 브라우저 기록, 키 입력, 비밀번호\n"
+                  "- 브라우저 탭 제목, 환경 변수, 명령줄 인자\n"
+                  "- 전체 파일 경로 또는 사용자 폴더 경로\n\n"
+                  "동의하지 않으면 아무 정보도 전송되지 않습니다.")
+            .arg(reportCode);
+    }
+
+    QJsonObject buildErrorReportPayload(const QString &reportCode,
+                                        const QString &contact,
+                                        const QString &summaryText,
+                                        const QString &detailsText,
+                                        const QString &reason) const {
+        QJsonObject object;
+        object["app_version"] = QString("v%1").arg(QString::fromUtf8(APP_VERSION));
+        object["report_code"] = reportCode;
+        object["reason"] = reason;
+        object["contact"] = contact;
+        object["summary"] = summaryText;
+        object["details"] = detailsText;
+        object["created_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        object["system"] = systemSpecObject();
+        object["recent_log"] = recentAppLog();
+        return object;
+    }
+
+    bool postErrorReport(const QJsonObject &payload, QString *errorText) {
+        QNetworkAccessManager manager;
+        QNetworkRequest request(QUrl("https://mg.haimez.kr/api/error-reports"));
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json; charset=utf-8");
+        request.setHeader(QNetworkRequest::UserAgentHeader, QString("MemoryGuardian/%1").arg(APP_VERSION));
+        QNetworkReply *reply = manager.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+
+        QEventLoop loop;
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        connect(&timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
+        timeout.start(15000);
+        loop.exec();
+
+        bool ok = reply->error() == QNetworkReply::NoError;
+        if (!ok && errorText) {
+            *errorText = reply->errorString();
+        }
+        reply->deleteLater();
+        return ok;
+    }
+
+    void showErrorReportDialog(const QString &reason, const QString &prefillDetails) {
+        QString reportCode = errorReportCode();
+        QDialog dialog(this);
+        dialog.setWindowTitle(ko("오류 로그 전송"));
+        dialog.resize(620, 640);
+
+        auto *layout = new QVBoxLayout(&dialog);
+        layout->setContentsMargins(22, 20, 22, 20);
+        layout->setSpacing(12);
+
+        auto *titleLabel = new QLabel(ko("오류 로그를 HAIMEZ에 전송할까요?"));
+        titleLabel->setStyleSheet("font-size: 20px; font-weight: 800;");
+        auto *infoLabel = new QLabel(includedErrorReportInfoText(reportCode));
+        infoLabel->setWordWrap(true);
+
+        auto *contactEdit = new QLineEdit();
+        contactEdit->setPlaceholderText(ko("연락처 선택 입력: 이메일, 디스코드 닉네임 등"));
+        auto *summaryEdit = new QLineEdit(reason);
+        summaryEdit->setPlaceholderText(ko("요약: 어떤 문제가 있었나요?"));
+        auto *detailsEdit = new QTextEdit(prefillDetails);
+        detailsEdit->setPlaceholderText(ko("상세 설명: 언제, 어떤 버튼을 눌렀는지 적어주세요."));
+        detailsEdit->setMinimumHeight(110);
+
+        auto *consent = new QCheckBox(ko("위 정보를 확인했으며 오류 분석을 위해 전송하는 데 동의합니다."));
+
+        layout->addWidget(titleLabel);
+        layout->addWidget(infoLabel);
+        layout->addWidget(new QLabel(ko("연락처")));
+        layout->addWidget(contactEdit);
+        layout->addWidget(new QLabel(ko("요약")));
+        layout->addWidget(summaryEdit);
+        layout->addWidget(new QLabel(ko("상세 설명")));
+        layout->addWidget(detailsEdit, 1);
+        layout->addWidget(consent);
+
+        auto *buttons = new QHBoxLayout();
+        buttons->addStretch();
+        auto *sendButton = new QPushButton(ko("전송"));
+        sendButton->setObjectName("primaryButton");
+        auto *cancelButton = new QPushButton(ko("취소"));
+        sendButton->setEnabled(false);
+        buttons->addWidget(cancelButton);
+        buttons->addWidget(sendButton);
+        layout->addLayout(buttons);
+
+        connect(consent, &QCheckBox::toggled, sendButton, &QPushButton::setEnabled);
+        connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+        connect(sendButton, &QPushButton::clicked, &dialog, [&] {
+            QJsonObject payload = buildErrorReportPayload(reportCode,
+                                                          contactEdit->text().trimmed(),
+                                                          summaryEdit->text().trimmed(),
+                                                          detailsEdit->toPlainText().trimmed(),
+                                                          reason);
+            QString errorText;
+            if (postErrorReport(payload, &errorText)) {
+                appendLog(ko("오류 로그 전송 완료: %1").arg(reportCode));
+                QMessageBox::information(&dialog, ko("오류 로그 전송"), ko("오류 로그를 전송했습니다.\n오류 코드: %1").arg(reportCode));
+                dialog.accept();
+            } else {
+                appendLog(ko("오류 로그 전송 실패: %1").arg(errorText));
+                QMessageBox::warning(&dialog, ko("오류 로그 전송"), ko("전송에 실패했습니다.\n%1").arg(errorText));
+            }
+        });
+
+        dialog.setStyleSheet(darkModeEnabled() ? R"(
+            QDialog { background: #0f172a; color: #e5e7eb; font-family: "Malgun Gothic"; }
+            QLabel { background: transparent; }
+            QLineEdit, QTextEdit { background: #111827; color: #e5e7eb; border: 1px solid #334155; border-radius: 9px; padding: 8px; }
+            QPushButton { min-height: 36px; background: #111827; color: #e5e7eb; border: 1px solid #334155; border-radius: 9px; padding: 0 16px; font-weight: 600; }
+            QPushButton#primaryButton { background: #2563eb; color: white; border: 0; font-weight: 800; }
+        )" : R"(
+            QDialog { background: #f6f8fb; color: #111827; font-family: "Malgun Gothic"; }
+            QLabel { background: transparent; }
+            QLineEdit, QTextEdit { background: white; color: #111827; border: 1px solid #d7dee9; border-radius: 9px; padding: 8px; }
+            QPushButton { min-height: 36px; background: white; color: #111827; border: 1px solid #d7dee9; border-radius: 9px; padding: 0 16px; font-weight: 600; }
+            QPushButton#primaryButton { background: #2563eb; color: white; border: 0; font-weight: 800; }
+        )");
+
+        dialog.exec();
+    }
+
+    void checkPreviousCrash() {
+        if (previousCrashPromptShown || !QFile::exists(runMarkerPath())) {
+            return;
+        }
+        previousCrashPromptShown = true;
+        QFile file(runMarkerPath());
+        QString marker;
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            marker = QString::fromUtf8(file.readAll());
+        }
+        QMessageBox box(this);
+        box.setWindowTitle(ko("이전 비정상 종료 감지"));
+        box.setIcon(QMessageBox::Warning);
+        box.setText(ko("이전 실행이 정상적으로 종료되지 않은 것 같습니다."));
+        box.setInformativeText(ko("크래시나 강제 종료가 있었다면 오류 로그를 전송해 분석을 도울 수 있습니다.\n전송 전 포함되는 정보를 확인하고 동의해야 합니다."));
+        QPushButton *sendButton = box.addButton(ko("오류 로그 확인 후 전송"), QMessageBox::AcceptRole);
+        box.addButton(ko("보내지 않음"), QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() == sendButton) {
+            showErrorReportDialog(ko("이전 비정상 종료 감지"), marker);
+        }
+        writeRunMarker();
     }
 
     void toggle() {
@@ -1044,6 +1281,7 @@ private:
         });
         connect(quitAction, &QAction::triggered, this, [this] {
             quitRequested = true;
+            clearRunMarker();
             writeDailyReport();
             qApp->quit();
         });
@@ -2323,6 +2561,7 @@ private:
 
         appendLog(ko("자동 업데이트 설치를 시작했습니다. 기존 앱 파일은 정리하고 설정과 리포트는 유지합니다."));
         quitRequested = true;
+        clearRunMarker();
         writeDailyReport();
         qApp->quit();
     }
@@ -2496,7 +2735,25 @@ private:
     }
 
     void appendLog(const QString &message) {
-        log->append(QTime::currentTime().toString("HH:mm:ss") + "  " + message);
+        QString line = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") + "  " + message;
+        if (log) {
+            log->append(QTime::currentTime().toString("HH:mm:ss") + "  " + message);
+        }
+        QFile file(appLogPath());
+        if (file.open(QIODevice::Append | QIODevice::Text)) {
+            QTextStream out(&file);
+            out << line << '\n';
+        }
+
+        QFile marker(runMarkerPath());
+        if (marker.open(QIODevice::ReadWrite | QIODevice::Text)) {
+            QJsonObject object;
+            object["app_version"] = QString::fromUtf8(APP_VERSION);
+            object["started_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+            object["last_event"] = message;
+            marker.resize(0);
+            marker.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+        }
     }
 
     bool darkModeEnabled() const {

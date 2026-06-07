@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.8"
+$version = "v1.3.9"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Applies the official monochrome HAIMEZ shield identity everywhere, including the system tray icon."
+    notes = "Adds opt-in crash and error log reporting to mg.haimez.kr with a clear disclosure of included system information before sending."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -34,7 +34,7 @@ Write-Host ""
 
 git status --short --branch
 git add -u
-git add update.json SHA256SUMS.txt
+git add update.json SHA256SUMS.txt ERROR_REPORTING.md
 git diff --cached --quiet
 if ($LASTEXITCODE -ne 0) {
     git commit -m "Update release metadata for $version"
@@ -42,8 +42,13 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.8
+## Memory Guardian 1.3.9
 
+- Add opt-in crash and error report sending to mg.haimez.kr
+- Show the exact included information before the user consents
+- Add local app log storage for recent error context
+- Detect previous abnormal shutdown on the next launch
+- Add ERROR_REPORTING.md for website and distribution notice
 - Use the official HAIMEZ shield for the background system tray icon
 - Add the official black, white, and silver HAIMEZ shield icon
 - Apply the icon to the app window and Windows taskbar
@@ -98,10 +103,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.8" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.9" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.8" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.9" --notes $notes --latest
 }
 
 Write-Host ""
