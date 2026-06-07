@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.9";
+static const char *APP_VERSION = "1.3.10";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -510,8 +510,8 @@ public:
         reportDate = QDate::currentDate();
         loadLearnedProfile();
         setWindowTitle(ko("메모리 자동 보호기"));
-        setMinimumSize(980, 700);
-        resize(1040, 790);
+        setMinimumSize(940, 640);
+        resize(1000, 720);
 
         auto *root = new QVBoxLayout(this);
         root->setContentsMargins(22, 18, 22, 18);
@@ -532,6 +532,13 @@ public:
         header->addLayout(titleGroup, 1);
         header->addWidget(statusPill);
         root->addLayout(header);
+
+        lowerTabs = new QTabWidget();
+        lowerTabs->setObjectName("mainPages");
+        auto *dashboardPage = new QWidget();
+        auto *dashboardLayout = new QVBoxLayout(dashboardPage);
+        dashboardLayout->setContentsMargins(0, 8, 0, 0);
+        dashboardLayout->setSpacing(14);
 
         auto *hero = new QFrame();
         hero->setObjectName("hero");
@@ -566,7 +573,7 @@ public:
         systemDetail->setObjectName("metricLabel");
         systemDetail->setWordWrap(true);
         heroLayout->addWidget(systemDetail);
-        root->addWidget(hero);
+        dashboardLayout->addWidget(hero);
 
         auto *controls = new QFrame();
         controls->setObjectName("panel");
@@ -625,7 +632,7 @@ public:
         controlLayout->setColumnStretch(6, 1);
         controlLayout->setColumnStretch(7, 1);
         controlLayout->setColumnStretch(8, 1);
-        root->addWidget(controls);
+        dashboardLayout->addWidget(controls);
 
         auto *reportPanel = new QFrame();
         reportPanel->setObjectName("panel");
@@ -650,7 +657,7 @@ public:
         for (int i = 0; i < 5; ++i) {
             reportLayout->setColumnStretch(i, 1);
         }
-        root->addWidget(reportPanel);
+        dashboardLayout->addWidget(reportPanel);
 
         serverPanel = new QFrame();
         serverPanel->setObjectName("panel");
@@ -667,12 +674,11 @@ public:
         serverLayout->addWidget(serverStatus, 2);
         serverLayout->addWidget(securityStatus, 2);
         serverLayout->addWidget(rebootStatus, 1);
-        root->addWidget(serverPanel);
+        dashboardLayout->addWidget(serverPanel);
+        dashboardLayout->addStretch(1);
 
-        lowerTabs = new QTabWidget();
-        lowerTabs->setObjectName("lowerTabs");
         auto *processPage = new QWidget();
-        auto *processPageLayout = new QHBoxLayout(processPage);
+        auto *processPageLayout = new QVBoxLayout(processPage);
         processPageLayout->setContentsMargins(0, 8, 0, 0);
         processPageLayout->setSpacing(14);
         auto *processPanel = new QFrame();
@@ -716,7 +722,7 @@ public:
         topProcesses->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         processLayout->addLayout(processHeader);
         processLayout->addWidget(topProcesses, 1);
-        processPageLayout->addWidget(processPanel, 7);
+        processPageLayout->addWidget(processPanel, 1);
 
         auto *detailPanel = new QFrame();
         detailPanel->setObjectName("panel");
@@ -731,7 +737,7 @@ public:
         detailLayout->addWidget(detailTitle);
         detailLayout->addWidget(processDetail);
         detailLayout->addStretch(1);
-        processPageLayout->addWidget(detailPanel, 4);
+        processPageLayout->addWidget(detailPanel);
 
         log = new QTextEdit();
         log->setObjectName("log");
@@ -739,7 +745,31 @@ public:
         log->setMinimumHeight(210);
         log->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         log->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto *trendPage = new QWidget();
+        auto *trendPageLayout = new QVBoxLayout(trendPage);
+        trendPageLayout->setContentsMargins(0, 8, 0, 0);
+        auto *trendPanel = new QFrame();
+        trendPanel->setObjectName("panel");
+        auto *trendLayout = new QVBoxLayout(trendPanel);
+        trendLayout->setContentsMargins(22, 18, 22, 18);
+        trendLayout->setSpacing(10);
+        auto *trendTitle = new QLabel(ko("장기 추세"));
+        trendTitle->setStyleSheet("font-size: 22px; font-weight: 800;");
+        auto *trendInfo = new QLabel(ko("5분마다 저장한 기록으로 1시간, 24시간, 7일, 30일 추세를 확인합니다. 그래프는 필요할 때만 열어 렉을 줄입니다."));
+        trendInfo->setObjectName("metricLabel");
+        trendInfo->setWordWrap(true);
+        auto *openTrendButton = new QPushButton(ko("장기 추세 그래프 열기"));
+        openTrendButton->setObjectName("primaryButton");
+        openTrendButton->setMaximumWidth(240);
+        trendLayout->addWidget(trendTitle);
+        trendLayout->addWidget(trendInfo);
+        trendLayout->addWidget(openTrendButton);
+        trendLayout->addStretch(1);
+        trendPageLayout->addWidget(trendPanel, 1);
+
+        lowerTabs->addTab(dashboardPage, ko("대시보드"));
         lowerTabs->addTab(processPage, ko("프로세스"));
+        lowerTabs->addTab(trendPage, ko("장기 추세"));
         lowerTabs->addTab(log, ko("활동 로그"));
         root->addWidget(lowerTabs, 1);
 
@@ -776,6 +806,9 @@ public:
         connect(trendButton, &QPushButton::clicked, this, [this] {
             showLongTermTrendDialog();
         });
+        connect(openTrendButton, &QPushButton::clicked, this, [this] {
+            showLongTermTrendDialog();
+        });
         connect(updateButton, &QPushButton::clicked, this, [this] {
             checkForUpdates(false);
         });
@@ -788,6 +821,12 @@ public:
         connect(processSearch, &QLineEdit::textChanged, this, [this] {
             updateTopProcesses(latestProcesses);
             updateProcessDetail();
+        });
+        connect(lowerTabs, &QTabWidget::currentChanged, this, [this](int index) {
+            if (index == processPageIndex()) {
+                updateTopProcesses(latestProcesses);
+                updateProcessDetail();
+            }
         });
         connect(qiHelpButton, &QPushButton::clicked, this, [this] {
             showQiHelpDialog();
@@ -907,6 +946,7 @@ private:
     qint64 lastProcessCsvMs = 0;
     qint64 lastTrendCsvMs = 0;
     qint64 lastSecurityScanMs = 0;
+    qint64 lastProcessUiRefreshMs = 0;
     qint64 optimizeSuppressedUntilMs = 0;
     bool running = true;
     int adaptiveThreshold = 80;
@@ -927,6 +967,14 @@ private:
     bool cachedPublicPort = false;
     bool cachedPublicRdp = false;
     bool previousCrashPromptShown = false;
+
+    int processPageIndex() const {
+        return 1;
+    }
+
+    bool processPageVisible() const {
+        return lowerTabs && lowerTabs->currentIndex() == processPageIndex();
+    }
 
     QWidget *makeMetric(const QString &labelText, QLabel *value, QWidget *sideWidget = nullptr) {
         auto *box = new QWidget();
@@ -1340,14 +1388,23 @@ private:
 
         QiState qi = evaluateQi(samples, activeThreshold);
         QVector<ProcessUsage> processes = readTopProcesses();
+        latestProcesses = processes;
         updateProcessTrends(processes, snapshot.time);
         updateUi(snapshot, qi, activeThreshold);
-        updateTopProcesses(processes);
-        updateProcessDetail();
+
+        qint64 uiNow = QDateTime::currentMSecsSinceEpoch();
+        if (processPageVisible() && (lastProcessUiRefreshMs == 0 || uiNow - lastProcessUiRefreshMs >= 6000)) {
+            updateTopProcesses(processes);
+            updateProcessDetail();
+            lastProcessUiRefreshMs = uiNow;
+        }
+
         appendCsv(snapshot, qi, activeThreshold);
         appendProcessCsv(processes, snapshot.time);
         appendLongTermTrend(snapshot);
-        updateServerHealthCards(snapshot, processes);
+        if (serverPanel && serverPanel->isVisible()) {
+            updateServerHealthCards(snapshot, processes);
+        }
 
         qint64 now = QDateTime::currentMSecsSinceEpoch();
         checkOptimizeEffect(snapshot, now);
@@ -2851,7 +2908,7 @@ private:
                 color: #cbd5e1;
                 selection-background-color: #1e40af;
             }
-            QTabWidget#lowerTabs::pane {
+            QTabWidget#mainPages::pane {
                 border: 0;
                 background: transparent;
             }
@@ -3001,7 +3058,7 @@ private:
                 color: #334155;
                 selection-background-color: #dbeafe;
             }
-            QTabWidget#lowerTabs::pane {
+            QTabWidget#mainPages::pane {
                 border: 0;
                 background: transparent;
             }
