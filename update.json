@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.3.9",
+    "version":  "1.3.10",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "4920466273D060D65597CF692EAFFFB8F1A3DC6D80287B5591D4CECC1C1B2E28",
+    "sha256":  "B74A867E5054A41A9E4013177EEC9C2D5C2AB97DF80670AADAD2DCCE16B2CE20",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Adds opt-in crash and error log reporting to mg.haimez.kr with a clear disclosure of included system information before sending."
+    "notes":  "Splits the app into lighter pages and refreshes heavy process tables only when needed to reduce UI lag."
 }
