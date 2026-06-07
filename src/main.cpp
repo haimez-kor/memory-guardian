@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.5";
+static const char *APP_VERSION = "1.3.6";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -388,7 +388,7 @@ static MemorySnapshot readMemory() {
     return snapshot;
 }
 
-static QVector<ProcessUsage> readTopProcesses(int limit = 5) {
+static QVector<ProcessUsage> readTopProcesses(int limit = 0) {
     QVector<ProcessUsage> results;
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
@@ -433,8 +433,10 @@ static QVector<ProcessUsage> readTopProcesses(int limit = 5) {
     std::sort(results.begin(), results.end(), [](const ProcessUsage &a, const ProcessUsage &b) {
         return a.usedMb > b.usedMb;
     });
-    while (results.size() > limit) {
-        results.pop_back();
+    if (limit > 0) {
+        while (results.size() > limit) {
+            results.pop_back();
+        }
     }
     return results;
 }
@@ -675,8 +677,20 @@ public:
         auto *processLayout = new QVBoxLayout(processPanel);
         processLayout->setContentsMargins(20, 14, 20, 14);
         processLayout->setSpacing(8);
-        auto *processTitle = new QLabel(ko("RAM 사용 상위 프로그램"));
+        auto *processHeader = new QHBoxLayout();
+        auto *processTitle = new QLabel(ko("실행 중인 프로세스"));
         processTitle->setObjectName("metricLabel");
+        processCountLabel = new QLabel(ko("확인 중"));
+        processCountLabel->setObjectName("metricLabel");
+        processSearch = new QLineEdit();
+        processSearch->setObjectName("processSearch");
+        processSearch->setPlaceholderText(ko("프로세스 이름 또는 PID 검색"));
+        processSearch->setClearButtonEnabled(true);
+        processSearch->setMaximumWidth(300);
+        processHeader->addWidget(processTitle);
+        processHeader->addWidget(processCountLabel);
+        processHeader->addStretch(1);
+        processHeader->addWidget(processSearch);
         topProcesses = new QTableWidget();
         topProcesses->setObjectName("processTable");
         topProcesses->setColumnCount(5);
@@ -697,7 +711,7 @@ public:
         topProcesses->setMinimumHeight(210);
         topProcesses->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         topProcesses->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        processLayout->addWidget(processTitle);
+        processLayout->addLayout(processHeader);
         processLayout->addWidget(topProcesses, 1);
         processPageLayout->addWidget(processPanel, 7);
 
@@ -763,6 +777,10 @@ public:
             checkForUpdates(false);
         });
         connect(topProcesses, &QTableWidget::cellClicked, this, [this](int, int) {
+            updateProcessDetail();
+        });
+        connect(processSearch, &QLineEdit::textChanged, this, [this] {
+            updateTopProcesses(latestProcesses);
             updateProcessDetail();
         });
         connect(qiHelpButton, &QPushButton::clicked, this, [this] {
@@ -849,6 +867,7 @@ private:
     QLabel *securityStatus = nullptr;
     QLabel *rebootStatus = nullptr;
     QLabel *processDetail = nullptr;
+    QLabel *processCountLabel = nullptr;
     QFrame *serverPanel = nullptr;
     QProgressBar *meter = nullptr;
     QCheckBox *autoTune = nullptr;
@@ -862,12 +881,14 @@ private:
     QPushButton *updateButton = nullptr;
     QPushButton *qiHelpButton = nullptr;
     QTableWidget *topProcesses = nullptr;
+    QLineEdit *processSearch = nullptr;
     QTextEdit *log = nullptr;
     QTabWidget *lowerTabs = nullptr;
     QSystemTrayIcon *trayIcon = nullptr;
     QMenu *trayMenu = nullptr;
     QTimer timer;
     QVector<MemorySnapshot> samples;
+    QVector<ProcessUsage> latestProcesses;
     QHash<QString, ProcessTrend> processTrends;
     QHash<QString, QIcon> processIconCache;
     HourStats hours[24];
@@ -1093,7 +1114,7 @@ private:
         }
 
         QiState qi = evaluateQi(samples, activeThreshold);
-        QVector<ProcessUsage> processes = readTopProcesses(20);
+        QVector<ProcessUsage> processes = readTopProcesses();
         updateProcessTrends(processes, snapshot.time);
         updateUi(snapshot, qi, activeThreshold);
         updateTopProcesses(processes);
@@ -1596,6 +1617,7 @@ private:
         if (!topProcesses) {
             return;
         }
+        latestProcesses = processes;
 
         QString selectedKey;
         if (topProcesses->currentRow() >= 0) {
@@ -1605,12 +1627,28 @@ private:
             }
         }
 
+        QString query = processSearch ? processSearch->text().trimmed() : QString();
+        QVector<ProcessUsage> visibleProcesses;
+        visibleProcesses.reserve(processes.size());
+        for (const ProcessUsage &process : processes) {
+            bool nameMatch = query.isEmpty() || process.name.contains(query, Qt::CaseInsensitive);
+            bool pidMatch = query.isEmpty() || QString::number(process.pid).contains(query);
+            if (nameMatch || pidMatch) {
+                visibleProcesses.push_back(process);
+            }
+        }
+        if (processCountLabel) {
+            processCountLabel->setText(query.isEmpty()
+                                           ? ko("전체 %1개").arg(processes.size())
+                                           : ko("검색 %1개 / 전체 %2개").arg(visibleProcesses.size()).arg(processes.size()));
+        }
+
         topProcesses->setUpdatesEnabled(false);
-        topProcesses->setRowCount(processes.size());
+        topProcesses->setRowCount(visibleProcesses.size());
         QFileIconProvider iconProvider;
         int rank = 0;
         int selectedRow = -1;
-        for (const ProcessUsage &process : processes) {
+        for (const ProcessUsage &process : visibleProcesses) {
             qint64 delta = processDeltaMb(process);
             QString deltaText = delta >= 0 ? QString("+%1 MB").arg(delta) : QString("%1 MB").arg(delta);
             QString key = QString("%1:%2").arg(process.name).arg(process.pid);
@@ -1654,7 +1692,7 @@ private:
 
         if (selectedRow >= 0) {
             topProcesses->selectRow(selectedRow);
-        } else if (!processes.isEmpty()) {
+        } else if (!visibleProcesses.isEmpty()) {
             topProcesses->selectRow(0);
         }
         topProcesses->setUpdatesEnabled(true);
@@ -1662,6 +1700,11 @@ private:
 
     void updateProcessDetail() {
         if (!processDetail) {
+            return;
+        }
+        if (processSearch && !processSearch->text().trimmed().isEmpty()
+            && topProcesses && topProcesses->rowCount() == 0) {
+            processDetail->setText(ko("검색 조건과 일치하는 프로세스가 없습니다."));
             return;
         }
 
