@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.4";
+static const char *APP_VERSION = "1.3.5";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -99,6 +99,7 @@ struct HourStats {
 
 struct ProcessUsage {
     QString name;
+    QString executablePath;
     DWORD pid = 0;
     quint64 usedMb = 0;
 };
@@ -417,6 +418,11 @@ static QVector<ProcessUsage> readTopProcesses(int limit = 5) {
                 usage.name = QString::fromWCharArray(entry.szExeFile);
                 usage.pid = entry.th32ProcessID;
                 usage.usedMb = mb;
+                wchar_t pathBuffer[32768] {};
+                DWORD pathLength = 32768;
+                if (QueryFullProcessImageNameW(process, 0, pathBuffer, &pathLength)) {
+                    usage.executablePath = QString::fromWCharArray(pathBuffer, int(pathLength));
+                }
                 results.push_back(usage);
             }
         }
@@ -658,28 +664,42 @@ public:
         serverLayout->addWidget(rebootStatus, 1);
         root->addWidget(serverPanel);
 
-        auto *lowerLayout = new QHBoxLayout();
-        lowerLayout->setSpacing(14);
-
+        lowerTabs = new QTabWidget();
+        lowerTabs->setObjectName("lowerTabs");
+        auto *processPage = new QWidget();
+        auto *processPageLayout = new QHBoxLayout(processPage);
+        processPageLayout->setContentsMargins(0, 8, 0, 0);
+        processPageLayout->setSpacing(14);
         auto *processPanel = new QFrame();
         processPanel->setObjectName("panel");
         auto *processLayout = new QVBoxLayout(processPanel);
         processLayout->setContentsMargins(20, 14, 20, 14);
         processLayout->setSpacing(8);
-        auto *processTitle = new QLabel(ko("RAM 사용 상위 프로그램 / 오늘 증가량"));
+        auto *processTitle = new QLabel(ko("RAM 사용 상위 프로그램"));
         processTitle->setObjectName("metricLabel");
-        topProcesses = new QTextEdit();
-        topProcesses->setObjectName("log");
-        topProcesses->setReadOnly(true);
-        topProcesses->setMinimumHeight(118);
+        topProcesses = new QTableWidget();
+        topProcesses->setObjectName("processTable");
+        topProcesses->setColumnCount(5);
+        topProcesses->setHorizontalHeaderLabels({ko("#"), ko("프로세스"), ko("사용 중"), ko("증가량"), ko("판정")});
+        topProcesses->verticalHeader()->setVisible(false);
+        topProcesses->horizontalHeader()->setStretchLastSection(true);
+        topProcesses->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        topProcesses->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        topProcesses->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+        topProcesses->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+        topProcesses->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        topProcesses->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        topProcesses->setSelectionBehavior(QAbstractItemView::SelectRows);
+        topProcesses->setSelectionMode(QAbstractItemView::SingleSelection);
+        topProcesses->setShowGrid(false);
+        topProcesses->setAlternatingRowColors(true);
+        topProcesses->setIconSize(QSize(24, 24));
+        topProcesses->setMinimumHeight(210);
         topProcesses->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         topProcesses->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         processLayout->addWidget(processTitle);
         processLayout->addWidget(topProcesses, 1);
-        lowerLayout->addWidget(processPanel, 5);
-
-        auto *rightStack = new QVBoxLayout();
-        rightStack->setSpacing(14);
+        processPageLayout->addWidget(processPanel, 7);
 
         auto *detailPanel = new QFrame();
         detailPanel->setObjectName("panel");
@@ -693,17 +713,18 @@ public:
         processDetail->setWordWrap(true);
         detailLayout->addWidget(detailTitle);
         detailLayout->addWidget(processDetail);
-        rightStack->addWidget(detailPanel, 0);
+        detailLayout->addStretch(1);
+        processPageLayout->addWidget(detailPanel, 4);
 
         log = new QTextEdit();
         log->setObjectName("log");
         log->setReadOnly(true);
-        log->setMinimumHeight(118);
+        log->setMinimumHeight(210);
         log->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         log->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        rightStack->addWidget(log, 1);
-        lowerLayout->addLayout(rightStack, 6);
-        root->addLayout(lowerLayout, 1);
+        lowerTabs->addTab(processPage, ko("프로세스"));
+        lowerTabs->addTab(log, ko("활동 로그"));
+        root->addWidget(lowerTabs, 1);
 
         timer.setInterval(2000);
         loadUiSettings();
@@ -740,6 +761,9 @@ public:
         });
         connect(updateButton, &QPushButton::clicked, this, [this] {
             checkForUpdates(false);
+        });
+        connect(topProcesses, &QTableWidget::cellClicked, this, [this](int, int) {
+            updateProcessDetail();
         });
         connect(qiHelpButton, &QPushButton::clicked, this, [this] {
             showQiHelpDialog();
@@ -837,13 +861,15 @@ private:
     QPushButton *trendButton = nullptr;
     QPushButton *updateButton = nullptr;
     QPushButton *qiHelpButton = nullptr;
-    QTextEdit *topProcesses = nullptr;
+    QTableWidget *topProcesses = nullptr;
     QTextEdit *log = nullptr;
+    QTabWidget *lowerTabs = nullptr;
     QSystemTrayIcon *trayIcon = nullptr;
     QMenu *trayMenu = nullptr;
     QTimer timer;
     QVector<MemorySnapshot> samples;
     QHash<QString, ProcessTrend> processTrends;
+    QHash<QString, QIcon> processIconCache;
     HourStats hours[24];
     QDate reportDate;
     qint64 lastOptimizeMs = 0;
@@ -1571,28 +1597,67 @@ private:
             return;
         }
 
-        QStringList lines;
-        int rank = 1;
-        for (const ProcessUsage &process : processes) {
-            if (rank > 5) {
-                break;
+        QString selectedKey;
+        if (topProcesses->currentRow() >= 0) {
+            QTableWidgetItem *selected = topProcesses->item(topProcesses->currentRow(), 1);
+            if (selected) {
+                selectedKey = selected->data(Qt::UserRole).toString();
             }
+        }
+
+        topProcesses->setUpdatesEnabled(false);
+        topProcesses->setRowCount(processes.size());
+        QFileIconProvider iconProvider;
+        int rank = 0;
+        int selectedRow = -1;
+        for (const ProcessUsage &process : processes) {
             qint64 delta = processDeltaMb(process);
             QString deltaText = delta >= 0 ? QString("+%1 MB").arg(delta) : QString("%1 MB").arg(delta);
             QString key = QString("%1:%2").arg(process.name).arg(process.pid);
             QString pattern = processTrends.contains(key) ? processPatternLabel(processTrends[key]) : ko("관찰 중");
-            lines << QString("%1. %2%3 MB  오늘 %4  %5  PID %6")
-                         .arg(rank++)
-                         .arg(process.name.left(22), -24)
-                         .arg(process.usedMb, 5)
-                         .arg(deltaText, 9)
-                         .arg(pattern)
-                         .arg(process.pid);
+
+            auto *rankItem = new QTableWidgetItem(QString::number(rank + 1));
+            rankItem->setTextAlignment(Qt::AlignCenter);
+
+            auto *nameItem = new QTableWidgetItem(process.name);
+            nameItem->setData(Qt::UserRole, key);
+            nameItem->setToolTip(ko("%1\nPID %2").arg(process.executablePath.isEmpty() ? process.name : process.executablePath)
+                                                     .arg(process.pid));
+            QString iconKey = process.executablePath.isEmpty() ? process.name : process.executablePath;
+            if (!processIconCache.contains(iconKey)) {
+                QIcon icon = process.executablePath.isEmpty()
+                                 ? style()->standardIcon(QStyle::SP_ComputerIcon)
+                                 : iconProvider.icon(QFileInfo(process.executablePath));
+                processIconCache.insert(iconKey, icon);
+            }
+            nameItem->setIcon(processIconCache.value(iconKey));
+
+            auto *usageItem = new QTableWidgetItem(ko("%1 MB").arg(process.usedMb));
+            usageItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            auto *deltaItem = new QTableWidgetItem(deltaText);
+            deltaItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            auto *patternItem = new QTableWidgetItem(pattern);
+            patternItem->setTextAlignment(Qt::AlignCenter);
+
+            topProcesses->setItem(rank, 0, rankItem);
+            topProcesses->setItem(rank, 1, nameItem);
+            topProcesses->setItem(rank, 2, usageItem);
+            topProcesses->setItem(rank, 3, deltaItem);
+            topProcesses->setItem(rank, 4, patternItem);
+            topProcesses->setRowHeight(rank, 40);
+
+            if (key == selectedKey) {
+                selectedRow = rank;
+            }
+            rank++;
         }
-        if (lines.isEmpty()) {
-            lines << ko("프로세스 정보를 읽는 중입니다. 관리자 권한이면 더 정확합니다.");
+
+        if (selectedRow >= 0) {
+            topProcesses->selectRow(selectedRow);
+        } else if (!processes.isEmpty()) {
+            topProcesses->selectRow(0);
         }
-        topProcesses->setPlainText(lines.join('\n'));
+        topProcesses->setUpdatesEnabled(true);
     }
 
     void updateProcessDetail() {
@@ -1600,7 +1665,18 @@ private:
             return;
         }
 
-        const ProcessTrend *trend = mostImportantProcessTrend();
+        const ProcessTrend *trend = nullptr;
+        if (topProcesses && topProcesses->currentRow() >= 0) {
+            QTableWidgetItem *selected = topProcesses->item(topProcesses->currentRow(), 1);
+            QString key = selected ? selected->data(Qt::UserRole).toString() : QString();
+            auto it = processTrends.constFind(key);
+            if (it != processTrends.constEnd()) {
+                trend = &it.value();
+            }
+        }
+        if (!trend) {
+            trend = mostImportantProcessTrend();
+        }
         if (!trend) {
             processDetail->setText(ko("증가량이 있는 프로세스를 관찰하는 중입니다."));
             return;
@@ -2488,6 +2564,47 @@ private:
                 color: #cbd5e1;
                 selection-background-color: #1e40af;
             }
+            QTabWidget#lowerTabs::pane {
+                border: 0;
+                background: transparent;
+            }
+            QTabBar::tab {
+                min-width: 110px;
+                min-height: 34px;
+                padding: 0 14px;
+                margin-right: 6px;
+                background: #111827;
+                color: #94a3b8;
+                border: 1px solid #243244;
+                border-radius: 8px;
+                font-weight: 700;
+            }
+            QTabBar::tab:selected {
+                background: #1d4ed8;
+                color: white;
+                border-color: #2563eb;
+            }
+            QTableWidget#processTable {
+                background: #111827;
+                alternate-background-color: #0f172a;
+                color: #e5e7eb;
+                border: 0;
+                outline: 0;
+                selection-background-color: #1e3a8a;
+                selection-color: white;
+            }
+            QTableWidget#processTable::item {
+                border-bottom: 1px solid #1f2937;
+                padding: 4px 8px;
+            }
+            QHeaderView::section {
+                background: #0b1220;
+                color: #94a3b8;
+                border: 0;
+                border-bottom: 1px solid #334155;
+                padding: 8px;
+                font-weight: 700;
+            }
             QLabel#serverCard, QLabel#processDetail {
                 color: #cbd5e1;
                 line-height: 20px;
@@ -2596,6 +2713,47 @@ private:
                 padding: 12px;
                 color: #334155;
                 selection-background-color: #dbeafe;
+            }
+            QTabWidget#lowerTabs::pane {
+                border: 0;
+                background: transparent;
+            }
+            QTabBar::tab {
+                min-width: 110px;
+                min-height: 34px;
+                padding: 0 14px;
+                margin-right: 6px;
+                background: white;
+                color: #697486;
+                border: 1px solid #d7dee9;
+                border-radius: 8px;
+                font-weight: 700;
+            }
+            QTabBar::tab:selected {
+                background: #2563eb;
+                color: white;
+                border-color: #2563eb;
+            }
+            QTableWidget#processTable {
+                background: white;
+                alternate-background-color: #f8fafc;
+                color: #1f2937;
+                border: 0;
+                outline: 0;
+                selection-background-color: #dbeafe;
+                selection-color: #1e3a8a;
+            }
+            QTableWidget#processTable::item {
+                border-bottom: 1px solid #e5e7eb;
+                padding: 4px 8px;
+            }
+            QHeaderView::section {
+                background: #f8fafc;
+                color: #697486;
+                border: 0;
+                border-bottom: 1px solid #d7dee9;
+                padding: 8px;
+                font-weight: 700;
             }
             QLabel#serverCard, QLabel#processDetail {
                 color: #334155;
