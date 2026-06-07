@@ -5,12 +5,14 @@ project(MemoryGuardian LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
 add_executable(MemoryGuardian WIN32
     src/main.cpp
     app.rc
+    resources.qrc
 )
 
 target_link_libraries(MemoryGuardian PRIVATE

@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.6"
+$version = "v1.3.7"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Shows every readable running process and adds instant process-name/PID search with live result counts."
+    notes = "Introduces the official monochrome HAIMEZ shield identity across the app window, taskbar, executable, shortcuts, and installer."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,8 +42,12 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.6
+## Memory Guardian 1.3.7
 
+- Add the official black, white, and silver HAIMEZ shield icon
+- Apply the icon to the app window and Windows taskbar
+- Embed the icon in MemoryGuardian.exe and generated shortcuts
+- Apply the same branding to the Inno Setup installer
 - Show every readable running process instead of only the top 20
 - Add instant search by process name or PID
 - Show total and filtered process counts
@@ -93,10 +97,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.6" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.7" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.6" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.7" --notes $notes --latest
 }
 
 Write-Host ""

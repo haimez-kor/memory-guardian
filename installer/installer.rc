@@ -1,3 +1,4 @@
 1 RT_MANIFEST "installer.manifest"
+1 ICON "..\\assets\\haimez.ico"
 101 RCDATA "app.zip"
 102 RCDATA "install.ps1"
