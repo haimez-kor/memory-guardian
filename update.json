@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.3.4",
+    "version":  "1.3.6",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "F46E04FF075B3DE4BBF9E6D4529D97E8D32F3518CF7F1850020494304CE686EF",
+    "sha256":  "C6EA8B4C4EC6FAA7A8EDC36A53594CB5CE6359603A2A100145CBCC3DB4C2974B",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Adds an optimization-score explanation button, hides unstable early MB/h speeds until 10 minutes of observation, improves long-term trend tooltips, and simplifies the general-PC UI."
+    "notes":  "Shows every readable running process and adds instant process-name/PID search with live result counts."
 }
