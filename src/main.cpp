@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.10";
+static const char *APP_VERSION = "1.3.11";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -748,23 +748,32 @@ public:
         auto *trendPage = new QWidget();
         auto *trendPageLayout = new QVBoxLayout(trendPage);
         trendPageLayout->setContentsMargins(0, 8, 0, 0);
+        trendPageLayout->setSpacing(14);
         auto *trendPanel = new QFrame();
         trendPanel->setObjectName("panel");
         auto *trendLayout = new QVBoxLayout(trendPanel);
         trendLayout->setContentsMargins(22, 18, 22, 18);
-        trendLayout->setSpacing(10);
-        auto *trendTitle = new QLabel(ko("장기 추세"));
+        trendLayout->setSpacing(12);
+        auto *trendHeader = new QHBoxLayout();
+        auto *trendTitle = new QLabel(ko("장기 메모리 추세"));
         trendTitle->setStyleSheet("font-size: 22px; font-weight: 800;");
-        auto *trendInfo = new QLabel(ko("5분마다 저장한 기록으로 1시간, 24시간, 7일, 30일 추세를 확인합니다. 그래프는 필요할 때만 열어 렉을 줄입니다."));
-        trendInfo->setObjectName("metricLabel");
-        trendInfo->setWordWrap(true);
-        auto *openTrendButton = new QPushButton(ko("장기 추세 그래프 열기"));
-        openTrendButton->setObjectName("primaryButton");
-        openTrendButton->setMaximumWidth(240);
-        trendLayout->addWidget(trendTitle);
-        trendLayout->addWidget(trendInfo);
-        trendLayout->addWidget(openTrendButton);
-        trendLayout->addStretch(1);
+        trendRange = new QComboBox();
+        trendRange->addItems({ko("1시간"), ko("24시간"), ko("7일"), ko("30일")});
+        trendRange->setCurrentIndex(1);
+        trendRange->setMaximumWidth(140);
+        auto *openTrendFileButton = new QPushButton(ko("기록 파일 열기"));
+        openTrendFileButton->setMaximumWidth(150);
+        trendHeader->addWidget(trendTitle, 1);
+        trendHeader->addWidget(trendRange);
+        trendHeader->addWidget(openTrendFileButton);
+        trendSummary = new QLabel(ko("5분마다 기록한 RAM, 커밋 메모리, Non-Paged Pool 추세를 표시합니다."));
+        trendSummary->setObjectName("metricLabel");
+        trendSummary->setWordWrap(true);
+        trendChart = new LongTermChartWidget();
+        trendChart->setObjectName("inlineTrendChart");
+        trendLayout->addLayout(trendHeader);
+        trendLayout->addWidget(trendSummary);
+        trendLayout->addWidget(trendChart, 1);
         trendPageLayout->addWidget(trendPanel, 1);
 
         lowerTabs->addTab(dashboardPage, ko("대시보드"));
@@ -804,10 +813,14 @@ public:
             showDailyReportDialog();
         });
         connect(trendButton, &QPushButton::clicked, this, [this] {
-            showLongTermTrendDialog();
+            lowerTabs->setCurrentIndex(trendPageIndex());
+            refreshInlineTrend(true);
         });
-        connect(openTrendButton, &QPushButton::clicked, this, [this] {
-            showLongTermTrendDialog();
+        connect(trendRange, &QComboBox::currentIndexChanged, this, [this] {
+            refreshInlineTrend(true);
+        });
+        connect(openTrendFileButton, &QPushButton::clicked, this, [this] {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(longTermTrendPath()));
         });
         connect(updateButton, &QPushButton::clicked, this, [this] {
             checkForUpdates(false);
@@ -826,6 +839,8 @@ public:
             if (index == processPageIndex()) {
                 updateTopProcesses(latestProcesses);
                 updateProcessDetail();
+            } else if (index == trendPageIndex()) {
+                refreshInlineTrend(true);
             }
         });
         connect(qiHelpButton, &QPushButton::clicked, this, [this] {
@@ -933,6 +948,9 @@ private:
     QLineEdit *processSearch = nullptr;
     QTextEdit *log = nullptr;
     QTabWidget *lowerTabs = nullptr;
+    QComboBox *trendRange = nullptr;
+    QLabel *trendSummary = nullptr;
+    LongTermChartWidget *trendChart = nullptr;
     QSystemTrayIcon *trayIcon = nullptr;
     QMenu *trayMenu = nullptr;
     QTimer timer;
@@ -946,7 +964,9 @@ private:
     qint64 lastProcessCsvMs = 0;
     qint64 lastTrendCsvMs = 0;
     qint64 lastSecurityScanMs = 0;
+    qint64 lastProcessScanMs = 0;
     qint64 lastProcessUiRefreshMs = 0;
+    qint64 lastTrendUiRefreshMs = 0;
     qint64 optimizeSuppressedUntilMs = 0;
     bool running = true;
     int adaptiveThreshold = 80;
@@ -972,8 +992,16 @@ private:
         return 1;
     }
 
+    int trendPageIndex() const {
+        return 2;
+    }
+
     bool processPageVisible() const {
         return lowerTabs && lowerTabs->currentIndex() == processPageIndex();
+    }
+
+    bool trendPageVisible() const {
+        return lowerTabs && lowerTabs->currentIndex() == trendPageIndex();
     }
 
     QWidget *makeMetric(const QString &labelText, QLabel *value, QWidget *sideWidget = nullptr) {
@@ -1387,26 +1415,30 @@ private:
         }
 
         QiState qi = evaluateQi(samples, activeThreshold);
-        QVector<ProcessUsage> processes = readTopProcesses();
-        latestProcesses = processes;
-        updateProcessTrends(processes, snapshot.time);
+        qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (latestProcesses.isEmpty() || lastProcessScanMs == 0 || now - lastProcessScanMs >= 10000) {
+            latestProcesses = readTopProcesses();
+            updateProcessTrends(latestProcesses, snapshot.time);
+            lastProcessScanMs = now;
+        }
         updateUi(snapshot, qi, activeThreshold);
 
-        qint64 uiNow = QDateTime::currentMSecsSinceEpoch();
-        if (processPageVisible() && (lastProcessUiRefreshMs == 0 || uiNow - lastProcessUiRefreshMs >= 6000)) {
-            updateTopProcesses(processes);
+        if (processPageVisible() && (lastProcessUiRefreshMs == 0 || now - lastProcessUiRefreshMs >= 15000)) {
+            updateTopProcesses(latestProcesses);
             updateProcessDetail();
-            lastProcessUiRefreshMs = uiNow;
+            lastProcessUiRefreshMs = now;
         }
 
         appendCsv(snapshot, qi, activeThreshold);
-        appendProcessCsv(processes, snapshot.time);
+        appendProcessCsv(latestProcesses, snapshot.time);
         appendLongTermTrend(snapshot);
+        if (trendPageVisible() && (lastTrendUiRefreshMs == 0 || now - lastTrendUiRefreshMs >= 5 * 60 * 1000)) {
+            refreshInlineTrend(false);
+        }
         if (serverPanel && serverPanel->isVisible()) {
-            updateServerHealthCards(snapshot, processes);
+            updateServerHealthCards(snapshot, latestProcesses);
         }
 
-        qint64 now = QDateTime::currentMSecsSinceEpoch();
         checkOptimizeEffect(snapshot, now);
 
         if (qi.shouldOptimize
@@ -2281,6 +2313,36 @@ private:
             .arg(nonPagedDelta);
     }
 
+    int selectedTrendHours() const {
+        if (!trendRange) {
+            return 24;
+        }
+        if (trendRange->currentIndex() == 0) {
+            return 1;
+        }
+        if (trendRange->currentIndex() == 2) {
+            return 24 * 7;
+        }
+        if (trendRange->currentIndex() == 3) {
+            return 24 * 30;
+        }
+        return 24;
+    }
+
+    void refreshInlineTrend(bool force) {
+        if (!trendChart || !trendSummary) {
+            return;
+        }
+        qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (!force && lastTrendUiRefreshMs > 0 && now - lastTrendUiRefreshMs < 5 * 60 * 1000) {
+            return;
+        }
+        QVector<LongTermPoint> points = loadLongTermPoints(selectedTrendHours());
+        trendChart->setPoints(points, darkModeEnabled());
+        trendSummary->setText(longTermSummary(points));
+        lastTrendUiRefreshMs = now;
+    }
+
     void showLongTermTrendDialog() {
         auto *dialog = new QDialog(this);
         dialog->setWindowTitle(ko("장기 메모리 추세"));
@@ -2844,7 +2906,7 @@ private:
                 font-size: 30px;
                 font-weight: 800;
             }
-            QFrame#hero, QFrame#panel, QTextEdit#log {
+            QFrame#hero, QFrame#panel, QTextEdit#log, LongTermChartWidget#inlineTrendChart {
                 background: #111827;
                 border: 1px solid #243244;
                 border-radius: 14px;
@@ -2996,7 +3058,7 @@ private:
                 font-size: 30px;
                 font-weight: 800;
             }
-            QFrame#hero, QFrame#panel, QTextEdit#log {
+            QFrame#hero, QFrame#panel, QTextEdit#log, LongTermChartWidget#inlineTrendChart {
                 background: white;
                 border: 1px solid #dae1eb;
                 border-radius: 14px;
