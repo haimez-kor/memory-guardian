@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.11"
+$version = "v1.3.12"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Embeds the long-term trend graph in the app page and slows process scanning/refreshing to reduce UI lag."
+    notes = "Updates the HAIMEZ shield icon with a larger mark for clearer taskbar, tray, shortcut, and installer branding."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,8 +42,11 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.11
+## Memory Guardian 1.3.12
 
+- Redraw the HAIMEZ shield icon with a larger center mark
+- Improve readability in the Windows taskbar, tray, shortcuts, and installer
+- Regenerate the PNG and multi-size ICO assets
 - Embed the long-term trend graph directly in the Long-Term Trend page
 - Keep RAM protection sampling active while slowing process scans to reduce CPU/UI load
 - Slow process table refreshes to 15 seconds while still collecting process leak data
@@ -112,10 +115,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.11" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.12" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.11" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.12" --notes $notes --latest
 }
 
 Write-Host ""
