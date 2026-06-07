@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.7";
+static const char *APP_VERSION = "1.3.8";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -1018,20 +1018,7 @@ private:
     }
 
     QIcon appIcon() const {
-        QPixmap pixmap(64, 64);
-        pixmap.fill(Qt::transparent);
-
-        QPainter painter(&pixmap);
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setBrush(QColor("#2563eb"));
-        painter.setPen(Qt::NoPen);
-        painter.drawRoundedRect(QRect(4, 4, 56, 56), 14, 14);
-        painter.setBrush(QColor("#10b981"));
-        painter.drawEllipse(QRect(18, 18, 28, 28));
-        painter.setPen(QPen(QColor("#ffffff"), 5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter.drawLine(QPoint(25, 32), QPoint(31, 38));
-        painter.drawLine(QPoint(31, 38), QPoint(41, 26));
-        return QIcon(pixmap);
+        return QIcon(":/branding/haimez.ico");
     }
 
     void setupTray() {
