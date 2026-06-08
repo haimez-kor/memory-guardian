@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.12"
+$version = "v1.3.13"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Updates the HAIMEZ shield icon with a larger mark for clearer taskbar, tray, shortcut, and installer branding."
+    notes = "Improves Memory Guardian diagnostics with clearer health summaries, score explanations, process deltas, colored logs, and trend event markers."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,8 +42,15 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.12
+## Memory Guardian 1.3.13
 
+- Add a dashboard memory diagnosis summary for system health, RAM leak status, kernel memory, commit usage, and suspicious processes
+- Add live optimization score tooltips explaining RAM, commit, Non-Paged Pool, mode, threshold, and deduction details
+- Change scary leak wording into clearer observation-focused messages with 7-day Non-Paged Pool trend context
+- Expand operation modes to General PC, Gaming, Server, and Developer
+- Add recent 1-hour and 24-hour process memory delta columns
+- Color activity log messages by normal, warning, and risk severity
+- Add long-term trend event markers for app start and automatic cleanup events
 - Redraw the HAIMEZ shield icon with a larger center mark
 - Improve readability in the Windows taskbar, tray, shortcuts, and installer
 - Regenerate the PNG and multi-size ICO assets
@@ -115,10 +122,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.12" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.13" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.12" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.13" --notes $notes --latest
 }
 
 Write-Host ""

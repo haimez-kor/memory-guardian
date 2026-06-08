@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.12";
+static const char *APP_VERSION = "1.3.13";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -113,6 +113,11 @@ struct ProcessTrend {
     QDateTime lastSeen;
 };
 
+struct ProcessHistoryPoint {
+    QDateTime time;
+    quint64 usedMb = 0;
+};
+
 struct ServerProcessSummary {
     int node = 0;
     int python = 0;
@@ -128,6 +133,12 @@ struct LongTermPoint {
     quint64 commitMb = 0;
     quint64 nonPagedPoolMb = 0;
     quint64 pagedPoolMb = 0;
+};
+
+struct TrendEvent {
+    QDateTime time;
+    QString label;
+    QString type;
 };
 
 class HourChartWidget : public QWidget {
@@ -249,12 +260,25 @@ public:
         update();
     }
 
+    void setEvents(const QVector<TrendEvent> &source) {
+        events = source;
+        update();
+    }
+
 protected:
     bool event(QEvent *event) override {
         if (event->type() == QEvent::ToolTip) {
             auto *helpEvent = static_cast<QHelpEvent *>(event);
             int index = pointAt(helpEvent->pos());
-            if (index >= 0 && index < points.size()) {
+            int eventIndex = eventAt(helpEvent->pos());
+            if (eventIndex >= 0 && eventIndex < events.size()) {
+                const TrendEvent &event = events[eventIndex];
+                QToolTip::showText(helpEvent->globalPos(),
+                                   ko("%1\n%2")
+                                       .arg(event.time.toString("yyyy-MM-dd HH:mm"))
+                                       .arg(event.label),
+                                   this);
+            } else if (index >= 0 && index < points.size()) {
                 const LongTermPoint &point = points[index];
                 qint64 ramDelta = qint64(point.usedMb) - qint64(points.first().usedMb);
                 qint64 commitDelta = qint64(point.commitMb) - qint64(points.first().commitMb);
@@ -334,8 +358,26 @@ protected:
         drawSeries([](const LongTermPoint &p) { return p.commitMb; }, QColor("#10b981"), maxMb);
         drawSeries([](const LongTermPoint &p) { return p.nonPagedPoolMb * 10; }, QColor("#f59e0b"), maxMb);
 
+        painter.setPen(Qt::NoPen);
+        for (const TrendEvent &event : events) {
+            if (event.time < points.first().time || event.time > points.last().time) {
+                continue;
+            }
+            qint64 totalSecs = qMax<qint64>(1, points.first().time.secsTo(points.last().time));
+            qint64 offsetSecs = points.first().time.secsTo(event.time);
+            int x = area.left() + int(double(area.width()) * double(offsetSecs) / double(totalSecs));
+            QColor eventColor = event.type == "cleanup" ? QColor("#10b981")
+                                 : event.type == "warning" ? QColor("#f59e0b")
+                                                           : QColor("#60a5fa");
+            painter.setBrush(eventColor);
+            painter.drawEllipse(QPoint(x, area.top() + 10), 5, 5);
+            painter.setPen(eventColor);
+            painter.drawLine(x, area.top() + 18, x, area.bottom());
+            painter.setPen(Qt::NoPen);
+        }
+
         painter.setPen(text);
-        painter.drawText(18, rect().bottom() - 10, ko("파랑 RAM · 초록 커밋 · 주황 Non-Paged Pool x10"));
+        painter.drawText(18, rect().bottom() - 10, ko("파랑 RAM · 초록 커밋 · 주황 Non-Paged Pool x10 · 점 이벤트"));
         painter.setPen(muted);
         painter.drawText(rect().adjusted(18, 0, -18, -10), Qt::AlignRight | Qt::AlignBottom,
                          ko("%1개 기록").arg(points.size()));
@@ -343,6 +385,7 @@ protected:
 
 private:
     QVector<LongTermPoint> points;
+    QVector<TrendEvent> events;
     bool darkMode = false;
 
     QRect chartArea() const {
@@ -360,6 +403,27 @@ private:
         double ratio = double(point.x() - area.left()) / double(qMax(1, area.width()));
         int index = int(std::round(std::clamp(ratio, 0.0, 1.0) * double(points.size() - 1)));
         return std::clamp(index, 0, int(points.size()) - 1);
+    }
+
+    int eventAt(const QPoint &point) const {
+        if (points.size() < 2 || events.isEmpty()) {
+            return -1;
+        }
+        QRect area = chartArea();
+        qint64 totalSecs = qMax<qint64>(1, points.first().time.secsTo(points.last().time));
+        for (int i = 0; i < events.size(); ++i) {
+            const TrendEvent &event = events[i];
+            if (event.time < points.first().time || event.time > points.last().time) {
+                continue;
+            }
+            qint64 offsetSecs = points.first().time.secsTo(event.time);
+            int x = area.left() + int(double(area.width()) * double(offsetSecs) / double(totalSecs));
+            QRect hit(x - 8, area.top(), 16, area.height());
+            if (hit.contains(point)) {
+                return i;
+            }
+        }
+        return -1;
     }
 };
 
@@ -575,6 +639,20 @@ public:
         heroLayout->addWidget(systemDetail);
         dashboardLayout->addWidget(hero);
 
+        auto *healthPanel = new QFrame();
+        healthPanel->setObjectName("panel");
+        auto *healthLayout = new QVBoxLayout(healthPanel);
+        healthLayout->setContentsMargins(20, 14, 20, 14);
+        healthLayout->setSpacing(8);
+        auto *healthTitle = new QLabel(ko("메모리 진단 요약"));
+        healthTitle->setObjectName("metricLabel");
+        systemHealth = new QLabel(ko("시스템 상태를 분석하는 중입니다."));
+        systemHealth->setObjectName("diagnosticCard");
+        systemHealth->setWordWrap(true);
+        healthLayout->addWidget(healthTitle);
+        healthLayout->addWidget(systemHealth);
+        dashboardLayout->addWidget(healthPanel);
+
         auto *controls = new QFrame();
         controls->setObjectName("panel");
         auto *controlLayout = new QGridLayout(controls);
@@ -595,7 +673,7 @@ public:
         action->addItems({ko("자동 정리"), ko("알림만 표시")});
 
         usageMode = new QComboBox();
-        usageMode->addItems({ko("일반 PC"), ko("집 서버/개발 PC")});
+        usageMode->addItems({ko("일반 PC"), ko("게이밍"), ko("서버"), ko("개발자")});
         usageMode->setCurrentIndex(0);
 
         themeMode = new QComboBox();
@@ -702,8 +780,8 @@ public:
         processHeader->addWidget(processSearch);
         topProcesses = new QTableWidget();
         topProcesses->setObjectName("processTable");
-        topProcesses->setColumnCount(5);
-        topProcesses->setHorizontalHeaderLabels({ko("#"), ko("프로세스"), ko("사용 중"), ko("증가량"), ko("판정")});
+        topProcesses->setColumnCount(6);
+        topProcesses->setHorizontalHeaderLabels({ko("#"), ko("프로세스"), ko("사용 중"), ko("최근 1시간"), ko("최근 24시간"), ko("판정")});
         topProcesses->verticalHeader()->setVisible(false);
         topProcesses->horizontalHeader()->setStretchLastSection(true);
         topProcesses->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
@@ -711,6 +789,7 @@ public:
         topProcesses->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         topProcesses->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
         topProcesses->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+        topProcesses->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
         topProcesses->setEditTriggers(QAbstractItemView::NoEditTriggers);
         topProcesses->setSelectionBehavior(QAbstractItemView::SelectRows);
         topProcesses->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -793,11 +872,9 @@ public:
             saveUiSettings();
         });
         connect(usageMode, &QComboBox::currentIndexChanged, this, [this] {
-            appendLog(usageMode->currentIndex() == 1
-                          ? ko("서버/개발 모드: 자동 정리 기준을 더 보수적으로 잡습니다.")
-                          : ko("일반 PC 모드: 기본 정리 기준을 사용합니다."));
+            appendLog(ko("%1 모드로 변경했습니다.").arg(usageModeName()));
             if (!autoTune->isChecked()) {
-                threshold->setValue(usageMode->currentIndex() == 1 ? 74 : 80);
+                threshold->setValue(hardwareThreshold(samples.isEmpty() ? 16384 : samples.last().totalMb));
             }
             updateServerPanelVisibility();
             saveUiSettings();
@@ -863,6 +940,7 @@ public:
         appendLog(ko("다른 프로그램을 강제로 종료하지 않고 RAM 정리와 상태 감시만 수행합니다."));
         appendLog(ko("닫기 버튼을 눌러도 창만 숨겨지고 보호는 백그라운드에서 계속됩니다."));
         appendLog(ko("PC를 켤 때 자동으로 백그라운드 보호가 시작되도록 설치 프로그램이 등록합니다."));
+        appendTrendEvent(ko("앱 시작"), "info");
         appendLog(learnedThreshold > 0
                       ? ko("이전에 하루 동안 학습한 자동 정리 기준을 적용합니다.")
                       : ko("하루 학습 데이터가 아직 없어 PC 사양 기준으로 보호합니다."));
@@ -921,6 +999,7 @@ private:
     QLabel *adaptiveValue = nullptr;
     QLabel *summary = nullptr;
     QLabel *systemDetail = nullptr;
+    QLabel *systemHealth = nullptr;
     QLabel *todayAverage = nullptr;
     QLabel *todayPeak = nullptr;
     QLabel *busyHour = nullptr;
@@ -957,6 +1036,7 @@ private:
     QVector<MemorySnapshot> samples;
     QVector<ProcessUsage> latestProcesses;
     QHash<QString, ProcessTrend> processTrends;
+    QHash<QString, QVector<ProcessHistoryPoint>> processHistory;
     QHash<QString, QIcon> processIconCache;
     HourStats hours[24];
     QDate reportDate;
@@ -987,6 +1067,15 @@ private:
     bool cachedPublicPort = false;
     bool cachedPublicRdp = false;
     bool previousCrashPromptShown = false;
+    mutable qint64 cachedNonPagedDelta7d = 0;
+    mutable qint64 cachedNonPagedDelta7dMs = 0;
+
+    enum UsageMode {
+        GeneralMode = 0,
+        GamingMode = 1,
+        ServerMode = 2,
+        DeveloperMode = 3
+    };
 
     int processPageIndex() const {
         return 1;
@@ -1002,6 +1091,21 @@ private:
 
     bool trendPageVisible() const {
         return lowerTabs && lowerTabs->currentIndex() == trendPageIndex();
+    }
+
+    QString usageModeName() const {
+        if (!usageMode) {
+            return ko("일반 PC");
+        }
+        return usageMode->currentText();
+    }
+
+    bool serverLikeMode() const {
+        return usageMode && usageMode->currentIndex() == ServerMode;
+    }
+
+    QString signedMb(qint64 value) const {
+        return value >= 0 ? ko("+%1 MB").arg(value) : ko("%1 MB").arg(value);
     }
 
     QWidget *makeMetric(const QString &labelText, QLabel *value, QWidget *sideWidget = nullptr) {
@@ -1050,6 +1154,10 @@ private:
 
     QString longTermTrendPath() const {
         return reportDir() + "/long-term-trends.csv";
+    }
+
+    QString trendEventsPath() const {
+        return reportDir() + "/trend-events.csv";
     }
 
     QString appLogPath() const {
@@ -1147,7 +1255,7 @@ private:
             object["paged_pool_mb"] = QString::number(snapshot.pagedPoolMb);
         }
         object["admin_mode"] = runningAsAdmin();
-        object["usage_mode"] = usageMode && usageMode->currentIndex() == 1 ? ko("집 서버/개발 PC") : ko("일반 PC");
+        object["usage_mode"] = usageModeName();
         return object;
     }
 
@@ -1451,6 +1559,7 @@ private:
             optimizeEffectPending = true;
             optimizeCount++;
             appendLog(ko("최적화 점수가 낮거나 RAM 사용률이 기준을 넘어 자동 처리를 시작합니다."));
+            appendTrendEvent(ko("자동 정리"), "cleanup");
             if (action->currentIndex() == 0) {
                 appendLog(optimizeMemory());
             } else {
@@ -1597,8 +1706,19 @@ private:
     }
 
     int hardwareThreshold(quint64 totalMb) const {
-        bool serverMode = usageMode && usageMode->currentIndex() == 1;
-        if (serverMode) {
+        int mode = usageMode ? usageMode->currentIndex() : GeneralMode;
+        if (mode == GamingMode) {
+            if (totalMb <= 8192) {
+                return 78;
+            } else if (totalMb <= 16384) {
+                return 85;
+            } else if (totalMb >= 32768) {
+                return 90;
+            }
+            return 87;
+        }
+
+        if (mode == ServerMode) {
             if (totalMb <= 8192) {
                 return 70;
             } else if (totalMb <= 16384) {
@@ -1607,6 +1727,17 @@ private:
                 return 80;
             }
             return 76;
+        }
+
+        if (mode == DeveloperMode) {
+            if (totalMb <= 8192) {
+                return 76;
+            } else if (totalMb <= 16384) {
+                return 82;
+            } else if (totalMb >= 32768) {
+                return 88;
+            }
+            return 84;
         }
 
         if (totalMb <= 8192) {
@@ -1627,9 +1758,11 @@ private:
 
         int averageLoad = int(totalLoadSum / quint64(totalSampleCount));
         int base = hardwareThreshold(totalMb);
-        int learned = std::clamp(averageLoad + (usageMode && usageMode->currentIndex() == 1 ? 8 : 12), 66, 90);
+        int mode = usageMode ? usageMode->currentIndex() : GeneralMode;
+        int margin = mode == ServerMode ? 8 : (mode == GamingMode ? 14 : 12);
+        int learned = std::clamp(averageLoad + margin, 66, 90);
         int blended = (base * 50 + learned * 50) / 100;
-        return std::clamp(blended, usageMode && usageMode->currentIndex() == 1 ? 66 : 70, 90);
+        return std::clamp(blended, mode == ServerMode ? 66 : 70, 90);
     }
 
     int coveredHours() const {
@@ -1649,9 +1782,11 @@ private:
 
         int averageLoad = int(totalLoadSum / quint64(totalSampleCount));
         int hardwareBase = samples.isEmpty() ? 80 : hardwareThreshold(samples.last().totalMb);
-        int learnedBase = std::clamp(averageLoad + (usageMode && usageMode->currentIndex() == 1 ? 10 : 16), 66, 92);
+        int mode = usageMode ? usageMode->currentIndex() : GeneralMode;
+        int margin = mode == ServerMode ? 10 : (mode == GamingMode ? 18 : 16);
+        int learnedBase = std::clamp(averageLoad + margin, 66, 92);
         int blended = (hardwareBase * 35 + learnedBase * 65) / 100;
-        return std::clamp(blended, usageMode && usageMode->currentIndex() == 1 ? 66 : 68, 92);
+        return std::clamp(blended, mode == ServerMode ? 66 : 68, 92);
     }
 
     void loadLearnedProfile() {
@@ -1693,7 +1828,7 @@ private:
         if (!serverPanel || !usageMode) {
             return;
         }
-        serverPanel->setVisible(usageMode->currentIndex() == 1);
+        serverPanel->setVisible(usageMode->currentIndex() == ServerMode);
     }
 
     void showQiHelpDialog() {
@@ -1707,7 +1842,7 @@ private:
         int activeThreshold = autoTune->isChecked() ? adaptiveThreshold : threshold->value();
         QiState qi = evaluateQi(samples, activeThreshold);
         const MemorySnapshot &snapshot = samples.last();
-        QString modeText = usageMode && usageMode->currentIndex() == 1 ? ko("집 서버/개발 PC") : ko("일반 PC");
+        QString modeText = usageModeName();
         QString actionText = qi.shouldOptimize
                                  ? ko("현재 기준에서는 자동 정리 또는 알림 대상입니다.")
                                  : ko("현재 기준에서는 자동 정리 대상이 아닙니다.");
@@ -1765,6 +1900,7 @@ private:
     void updateUi(const MemorySnapshot &snapshot, const QiState &qi, int activeThreshold) {
         ramPercent->setText(QString("%1%").arg(snapshot.load));
         qiScore->setText(ko("%1점").arg(qi.score));
+        updateQiTooltip(snapshot, qi, activeThreshold);
 
         QString thresholdText = QString("%1%").arg(activeThreshold);
         if (autoTune->isChecked() && learnedThreshold == 0) {
@@ -1791,6 +1927,9 @@ private:
                               .arg(snapshot.pageFileTotalMb)
                               .arg(snapshot.nonPagedPoolMb)
                               .arg(snapshot.pagedPoolMb));
+        if (systemHealth) {
+            systemHealth->setText(diagnosticSummaryText(snapshot));
+        }
 
         if (qi.score <= 45 || snapshot.load >= DWORD(activeThreshold)) {
             statusPill->setText(ko("정리 필요"));
@@ -1830,14 +1969,43 @@ private:
             ProcessTrend &trend = processTrends[key];
             trend.lastMb = process.usedMb;
             trend.lastSeen = now;
+
+            QVector<ProcessHistoryPoint> &history = processHistory[key];
+            if (history.isEmpty() || history.last().time.secsTo(now) >= 30) {
+                history.push_back({now, process.usedMb});
+            } else {
+                history.last() = {now, process.usedMb};
+            }
+            while (!history.isEmpty() && history.first().time.secsTo(now) > 24 * 60 * 60) {
+                history.removeFirst();
+            }
         }
 
         QList<QString> keys = processTrends.keys();
         for (const QString &key : keys) {
             if (processTrends[key].lastSeen.secsTo(now) > 900) {
                 processTrends.remove(key);
+                processHistory.remove(key);
             }
         }
+    }
+
+    qint64 processWindowDeltaMb(const QString &key, int secondsBack) const {
+        auto it = processHistory.constFind(key);
+        if (it == processHistory.constEnd() || it.value().size() < 2) {
+            return 0;
+        }
+        const QVector<ProcessHistoryPoint> &history = it.value();
+        const ProcessHistoryPoint &last = history.last();
+        QDateTime cutoff = last.time.addSecs(-secondsBack);
+        const ProcessHistoryPoint *base = &history.first();
+        for (const ProcessHistoryPoint &point : history) {
+            if (point.time >= cutoff) {
+                base = &point;
+                break;
+            }
+        }
+        return qint64(last.usedMb) - qint64(base->usedMb);
     }
 
     qint64 processDeltaMb(const ProcessUsage &process) const {
@@ -1864,10 +2032,16 @@ private:
         qint64 observedMinutes = std::max<qint64>(1, trend.firstSeen.secsTo(trend.lastSeen) / 60);
         bool speedReady = std::isfinite(speed);
 
-        if (delta >= 1024 || (observedMinutes >= 30 && speedReady && speed >= 300.0)) {
+        bool developerMode = usageMode && usageMode->currentIndex() == DeveloperMode;
+        int warningDelta = developerMode ? 600 : 300;
+        int leakDelta = developerMode ? 1536 : 1024;
+        double warningSpeed = developerMode ? 220.0 : 120.0;
+        double leakSpeed = developerMode ? 450.0 : 300.0;
+
+        if (delta >= leakDelta || (observedMinutes >= 30 && speedReady && speed >= leakSpeed)) {
             return ko("누수 의심");
         }
-        if (delta >= 300 || (observedMinutes >= 20 && speedReady && speed >= 120.0)) {
+        if (delta >= warningDelta || (observedMinutes >= 20 && speedReady && speed >= warningSpeed)) {
             return ko("주의");
         }
         if (delta < 0) {
@@ -1909,22 +2083,26 @@ private:
     QString leakStatusText(const MemorySnapshot &snapshot) const {
         QString growth = biggestGrowthText();
         if (!growth.isEmpty()) {
-            return ko("누수 의심: %1").arg(growth);
+            return ko("관찰 필요: %1").arg(growth);
         }
 
         if (totalSampleCount >= 1800 && snapshot.load >= DWORD(averageLoadToday() + 8)) {
-            return ko("누수 의심: RAM 증가 추세");
+            return ko("관찰 필요: RAM 증가 추세");
         }
 
         if (snapshot.nonPagedPoolMb >= 1024) {
-            return ko("누수 의심: Non-Paged Pool 높음");
+            qint64 delta7d = longTermNonPagedDelta(24 * 7);
+            if (delta7d > 128) {
+                return ko("관찰 필요: Non-Paged Pool %1 MB, 7일 %2").arg(snapshot.nonPagedPoolMb).arg(signedMb(delta7d));
+            }
+            return ko("커널 메모리 높음: %1 MB, 7일 %2").arg(snapshot.nonPagedPoolMb).arg(signedMb(delta7d));
         }
 
         if (totalSampleCount < 1800) {
-            return ko("누수 의심: 학습 중");
+            return ko("진단 상태: 학습 중");
         }
 
-        return ko("누수 의심: 없음");
+        return ko("진단 상태: 이상 없음");
     }
 
     void updateTopProcesses(const QVector<ProcessUsage> &processes) {
@@ -1964,8 +2142,9 @@ private:
         int selectedRow = -1;
         for (const ProcessUsage &process : visibleProcesses) {
             qint64 delta = processDeltaMb(process);
-            QString deltaText = delta >= 0 ? QString("+%1 MB").arg(delta) : QString("%1 MB").arg(delta);
             QString key = QString("%1:%2").arg(process.name).arg(process.pid);
+            qint64 oneHourDelta = processWindowDeltaMb(key, 60 * 60);
+            qint64 dayDelta = processWindowDeltaMb(key, 24 * 60 * 60);
             QString pattern = processTrends.contains(key) ? processPatternLabel(processTrends[key]) : ko("관찰 중");
 
             auto *rankItem = new QTableWidgetItem(QString::number(rank + 1));
@@ -1986,16 +2165,20 @@ private:
 
             auto *usageItem = new QTableWidgetItem(ko("%1 MB").arg(process.usedMb));
             usageItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            auto *deltaItem = new QTableWidgetItem(deltaText);
-            deltaItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            usageItem->setToolTip(ko("앱 시작 후 변화: %1").arg(signedMb(delta)));
+            auto *hourItem = new QTableWidgetItem(signedMb(oneHourDelta));
+            hourItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            auto *dayItem = new QTableWidgetItem(signedMb(dayDelta));
+            dayItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             auto *patternItem = new QTableWidgetItem(pattern);
             patternItem->setTextAlignment(Qt::AlignCenter);
 
             topProcesses->setItem(rank, 0, rankItem);
             topProcesses->setItem(rank, 1, nameItem);
             topProcesses->setItem(rank, 2, usageItem);
-            topProcesses->setItem(rank, 3, deltaItem);
-            topProcesses->setItem(rank, 4, patternItem);
+            topProcesses->setItem(rank, 3, hourItem);
+            topProcesses->setItem(rank, 4, dayItem);
+            topProcesses->setItem(rank, 5, patternItem);
             topProcesses->setRowHeight(rank, 40);
 
             if (key == selectedKey) {
@@ -2040,6 +2223,9 @@ private:
         }
 
         qint64 delta = qint64(trend->lastMb) - qint64(trend->firstMb);
+        QString key = QString("%1:%2").arg(trend->name).arg(trend->pid);
+        qint64 oneHourDelta = processWindowDeltaMb(key, 60 * 60);
+        qint64 dayDelta = processWindowDeltaMb(key, 24 * 60 * 60);
         double speed = processGrowthPerHour(*trend);
         QString deltaText = delta >= 0 ? ko("+%1 MB").arg(delta) : ko("%1 MB").arg(delta);
         QString speedText = std::isfinite(speed)
@@ -2048,12 +2234,14 @@ private:
                                 : ko("계산 중 (10분 필요)");
         QString pattern = processPatternLabel(*trend);
 
-        processDetail->setText(ko("%1\nPID %2\n시작 메모리 %3 MB    현재 메모리 %4 MB\n증가량 %5    증가속도 %6\n판정: %7")
+        processDetail->setText(ko("%1\nPID %2\n시작 메모리 %3 MB    현재 메모리 %4 MB\n앱 시작 후 %5    최근 1시간 %6    최근 24시간 %7\n증가속도 %8\n판정: %9")
                                    .arg(trend->name)
                                    .arg(trend->pid)
                                    .arg(trend->firstMb)
                                    .arg(trend->lastMb)
                                    .arg(deltaText)
+                                   .arg(signedMb(oneHourDelta))
+                                   .arg(signedMb(dayDelta))
                                    .arg(speedText)
                                    .arg(pattern));
     }
@@ -2293,6 +2481,44 @@ private:
         return result;
     }
 
+    QVector<TrendEvent> loadTrendEvents(int hoursBack) const {
+        QVector<TrendEvent> result;
+        QFile file(trendEventsPath());
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return result;
+        }
+
+        QDateTime cutoff = QDateTime::currentDateTime().addSecs(-hoursBack * 3600);
+        QTextStream in(&file);
+        bool first = true;
+        while (!in.atEnd()) {
+            QString line = in.readLine().trimmed();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (first) {
+                first = false;
+                if (line.startsWith("time,")) {
+                    continue;
+                }
+            }
+
+            QStringList parts = line.split(',');
+            if (parts.size() < 3) {
+                continue;
+            }
+
+            TrendEvent event;
+            event.time = QDateTime::fromString(parts[0], Qt::ISODate);
+            event.label = parts[1];
+            event.type = parts[2];
+            if (event.time.isValid() && event.time >= cutoff) {
+                result.push_back(event);
+            }
+        }
+        return result;
+    }
+
     QString longTermSummary(const QVector<LongTermPoint> &points) const {
         if (points.isEmpty()) {
             return ko("아직 장기 추세 데이터가 없습니다. 5분마다 자동 저장됩니다.");
@@ -2311,6 +2537,83 @@ private:
             .arg(commitDelta)
             .arg(nonPagedDelta >= 0 ? "+" : "")
             .arg(nonPagedDelta);
+    }
+
+    qint64 longTermNonPagedDelta(int hoursBack) const {
+        if (hoursBack == 24 * 7) {
+            qint64 now = QDateTime::currentMSecsSinceEpoch();
+            if (cachedNonPagedDelta7dMs > 0 && now - cachedNonPagedDelta7dMs < 5 * 60 * 1000) {
+                return cachedNonPagedDelta7d;
+            }
+            QVector<LongTermPoint> points = loadLongTermPoints(hoursBack);
+            cachedNonPagedDelta7d = points.size() < 2
+                                        ? 0
+                                        : qint64(points.last().nonPagedPoolMb) - qint64(points.first().nonPagedPoolMb);
+            cachedNonPagedDelta7dMs = now;
+            return cachedNonPagedDelta7d;
+        }
+        QVector<LongTermPoint> points = loadLongTermPoints(hoursBack);
+        if (points.size() < 2) {
+            return 0;
+        }
+        return qint64(points.last().nonPagedPoolMb) - qint64(points.first().nonPagedPoolMb);
+    }
+
+    QString commitUsageText(const MemorySnapshot &snapshot) const {
+        int percent = snapshot.commitLimitMb > 0
+                          ? int(snapshot.commitMb * 100 / snapshot.commitLimitMb)
+                          : 0;
+        return ko("%1% (%2/%3 MB)").arg(percent).arg(snapshot.commitMb).arg(snapshot.commitLimitMb);
+    }
+
+    void updateQiTooltip(const MemorySnapshot &snapshot, const QiState &qi, int activeThreshold) {
+        if (!qiScore) {
+            return;
+        }
+        int commitPercent = snapshot.commitLimitMb > 0
+                                ? int(snapshot.commitMb * 100 / snapshot.commitLimitMb)
+                                : 0;
+        QString poolText = snapshot.nonPagedPoolMb >= 1024 ? ko("관찰 필요") : ko("정상");
+        qiScore->setToolTip(ko("RAM 사용률: %1%\n커밋 사용률: %2%\nNon-Paged Pool: %3 (%4 MB)\n운영 모드: %5\n자동 정리 기준: %6%\n\n감점: RAM -%7 / 여유 -%8 / 증가 추세 -%9\n점수 계산 결과: %10점")
+                                .arg(snapshot.load)
+                                .arg(commitPercent)
+                                .arg(poolText)
+                                .arg(snapshot.nonPagedPoolMb)
+                                .arg(usageModeName())
+                                .arg(activeThreshold)
+                                .arg(qi.pressure)
+                                .arg(qi.available)
+                                .arg(qi.trend)
+                                .arg(qi.score));
+    }
+
+    QString diagnosticSummaryText(const MemorySnapshot &snapshot) const {
+        QString growth = biggestGrowthText();
+        qint64 nonPaged7d = longTermNonPagedDelta(24 * 7);
+        QString ramLeak = growth.isEmpty() ? ko("없음") : growth;
+        QString kernelLeak;
+        if (snapshot.nonPagedPoolMb >= 1024 && nonPaged7d > 128) {
+            kernelLeak = ko("관찰 필요 (%1 MB, 7일 %2)").arg(snapshot.nonPagedPoolMb).arg(signedMb(nonPaged7d));
+        } else if (snapshot.nonPagedPoolMb >= 1024) {
+            kernelLeak = ko("높지만 안정적 (%1 MB, 7일 %2)").arg(snapshot.nonPagedPoolMb).arg(signedMb(nonPaged7d));
+        } else {
+            kernelLeak = ko("정상 (%1 MB)").arg(snapshot.nonPagedPoolMb);
+        }
+
+        QString status = ko("양호");
+        if (!growth.isEmpty() || (snapshot.nonPagedPoolMb >= 1024 && nonPaged7d > 128)) {
+            status = ko("관찰 필요");
+        }
+        if (snapshot.load >= 90 || (snapshot.commitLimitMb > 0 && snapshot.commitMb * 100 / snapshot.commitLimitMb >= 92)) {
+            status = ko("주의");
+        }
+
+        return ko("<b>시스템 상태: %1</b><br>RAM 누수: %2<br>커널 메모리: %3<br>커밋 사용률: %4<br>의심 프로세스: %5")
+            .arg(status)
+            .arg(growth.isEmpty() ? ko("없음") : ko("관찰 필요"))
+            .arg(kernelLeak)
+            .arg(commitUsageText(snapshot))
+            .arg(ramLeak);
     }
 
     int selectedTrendHours() const {
@@ -2338,7 +2641,9 @@ private:
             return;
         }
         QVector<LongTermPoint> points = loadLongTermPoints(selectedTrendHours());
+        QVector<TrendEvent> events = loadTrendEvents(selectedTrendHours());
         trendChart->setPoints(points, darkModeEnabled());
+        trendChart->setEvents(events);
         trendSummary->setText(longTermSummary(points));
         lastTrendUiRefreshMs = now;
     }
@@ -2381,7 +2686,9 @@ private:
                 hours = 24 * 30;
             }
             QVector<LongTermPoint> points = loadLongTermPoints(hours);
+            QVector<TrendEvent> events = loadTrendEvents(hours);
             chart->setPoints(points, darkModeEnabled());
+            chart->setEvents(events);
             summaryLabel->setText(longTermSummary(points));
         };
         connect(range, &QComboBox::currentIndexChanged, dialog, refresh);
@@ -2779,6 +3086,25 @@ private:
             << snapshot.pagedPoolMb << '\n';
     }
 
+    void appendTrendEvent(const QString &label, const QString &type) {
+        QFile file(trendEventsPath());
+        bool fresh = !file.exists();
+        if (!file.open(QIODevice::Append | QIODevice::Text)) {
+            return;
+        }
+        QString safeLabel = label;
+        safeLabel.replace(',', ' ');
+        QString safeType = type;
+        safeType.replace(',', ' ');
+        QTextStream out(&file);
+        if (fresh) {
+            out << "time,label,type\n";
+        }
+        out << QDateTime::currentDateTime().toString(Qt::ISODate) << ','
+            << safeLabel << ','
+            << safeType << '\n';
+    }
+
     void writeDailyReport() {
         QFile file(todayReportPath());
         if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -2856,7 +3182,22 @@ private:
     void appendLog(const QString &message) {
         QString line = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") + "  " + message;
         if (log) {
-            log->append(QTime::currentTime().toString("HH:mm:ss") + "  " + message);
+            QString color = darkModeEnabled() ? "#cbd5e1" : "#334155";
+            if (message.contains(ko("실패")) || message.contains(ko("불일치")) || message.contains(ko("차단"))
+                || message.contains(ko("급증")) || message.contains(ko("위험")) || message.contains(ko("누수 의심"))) {
+                color = "#ef4444";
+            } else if (message.contains(ko("주의")) || message.contains(ko("관찰 필요"))
+                       || message.contains(ko("정리 필요")) || message.contains(ko("기준을 넘어"))
+                       || message.contains(ko("높음")) || message.contains(ko("권장"))) {
+                color = "#f59e0b";
+            } else if (message.contains(ko("완료")) || message.contains(ko("성공"))
+                       || message.contains(ko("최신 버전")) || message.contains(ko("시작"))) {
+                color = "#10b981";
+            }
+            log->append(ko("<span style='color:%1'>%2&nbsp;&nbsp;%3</span>")
+                            .arg(color)
+                            .arg(QTime::currentTime().toString("HH:mm:ss").toHtmlEscaped())
+                            .arg(message.toHtmlEscaped()));
         }
         QFile file(appLogPath());
         if (file.open(QIODevice::Append | QIODevice::Text)) {
@@ -2905,6 +3246,11 @@ private:
                 color: #f8fafc;
                 font-size: 30px;
                 font-weight: 800;
+            }
+            QLabel#diagnosticCard {
+                color: #e5e7eb;
+                font-size: 14px;
+                line-height: 22px;
             }
             QFrame#hero, QFrame#panel, QTextEdit#log, LongTermChartWidget#inlineTrendChart {
                 background: #111827;
@@ -3057,6 +3403,11 @@ private:
                 color: #111827;
                 font-size: 30px;
                 font-weight: 800;
+            }
+            QLabel#diagnosticCard {
+                color: #1f2937;
+                font-size: 14px;
+                line-height: 22px;
             }
             QFrame#hero, QFrame#panel, QTextEdit#log, LongTermChartWidget#inlineTrendChart {
                 background: white;
