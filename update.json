@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.3.14",
+    "version":  "1.3.15",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "136BF34EAFB470D9A1684CA913BEE4885072E0C8D6C420C8D9A4C6B0959427D8",
+    "sha256":  "A66C18421537316B60152B7F564F649544AA6A254177830E0C196E5C9AE5602B",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Adds smarter scoring with learning confidence, detailed deductions, score-change logs, baseline anomaly detection, and game-mode cleanup protection."
+    "notes":  "Reduces lag when opening the Process page by limiting rendered rows and avoiding expensive per-process icon extraction."
 }
