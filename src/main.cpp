@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.15";
+static const char *APP_VERSION = "1.3.16";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -2122,6 +2122,78 @@ private:
         return qint64(last.usedMb) - qint64(base->usedMb);
     }
 
+    quint64 processAverageMb(const QString &key) const {
+        auto it = processHistory.constFind(key);
+        if (it == processHistory.constEnd() || it.value().isEmpty()) {
+            return 0;
+        }
+        quint64 total = 0;
+        for (const ProcessHistoryPoint &point : it.value()) {
+            total += point.usedMb;
+        }
+        return total / quint64(it.value().size());
+    }
+
+    quint64 processPeakMb(const QString &key) const {
+        auto it = processHistory.constFind(key);
+        if (it == processHistory.constEnd() || it.value().isEmpty()) {
+            return 0;
+        }
+        quint64 peak = 0;
+        for (const ProcessHistoryPoint &point : it.value()) {
+            peak = std::max(peak, point.usedMb);
+        }
+        return peak;
+    }
+
+    quint64 processLowMb(const QString &key) const {
+        auto it = processHistory.constFind(key);
+        if (it == processHistory.constEnd() || it.value().isEmpty()) {
+            return 0;
+        }
+        quint64 low = std::numeric_limits<quint64>::max();
+        for (const ProcessHistoryPoint &point : it.value()) {
+            low = std::min(low, point.usedMb);
+        }
+        return low == std::numeric_limits<quint64>::max() ? 0 : low;
+    }
+
+    QString processCauseSummary() const {
+        struct Cause {
+            QString name;
+            qint64 delta = 0;
+        };
+        QVector<Cause> causes;
+        qint64 totalPositive = 0;
+        for (const ProcessUsage &process : latestProcesses) {
+            QString key = QString("%1:%2").arg(process.name).arg(process.pid);
+            qint64 delta = processWindowDeltaMb(key, 60 * 60);
+            if (delta <= 80) {
+                continue;
+            }
+            causes.push_back({process.name, delta});
+            totalPositive += delta;
+        }
+        std::sort(causes.begin(), causes.end(), [](const Cause &a, const Cause &b) {
+            return a.delta > b.delta;
+        });
+        if (causes.isEmpty()) {
+            return ko("최근 1시간 증가 원인: 뚜렷한 단일 프로세스 없음");
+        }
+        QStringList parts;
+        qint64 topTotal = 0;
+        int count = std::min(3, int(causes.size()));
+        for (int i = 0; i < count; ++i) {
+            parts << ko("%1 %2").arg(causes[i].name).arg(signedMb(causes[i].delta));
+            topTotal += causes[i].delta;
+        }
+        int share = totalPositive > 0 ? int(topTotal * 100 / totalPositive) : 0;
+        return ko("최근 1시간 증가 원인: %1 · 상위 %2개가 증가량의 %3%")
+            .arg(parts.join(", "))
+            .arg(count)
+            .arg(share);
+    }
+
     qint64 processDeltaMb(const ProcessUsage &process) const {
         QString key = QString("%1:%2").arg(process.name).arg(process.pid);
         if (!processTrends.contains(key)) {
@@ -2342,6 +2414,9 @@ private:
         QString key = QString("%1:%2").arg(trend->name).arg(trend->pid);
         qint64 oneHourDelta = processWindowDeltaMb(key, 60 * 60);
         qint64 dayDelta = processWindowDeltaMb(key, 24 * 60 * 60);
+        quint64 averageMb = processAverageMb(key);
+        quint64 peakMb = processPeakMb(key);
+        quint64 lowMb = processLowMb(key);
         double speed = processGrowthPerHour(*trend);
         QString deltaText = delta >= 0 ? ko("+%1 MB").arg(delta) : ko("%1 MB").arg(delta);
         QString speedText = std::isfinite(speed)
@@ -2350,11 +2425,14 @@ private:
                                 : ko("계산 중 (10분 필요)");
         QString pattern = processPatternLabel(*trend);
 
-        processDetail->setText(ko("%1\nPID %2\n시작 메모리 %3 MB    현재 메모리 %4 MB\n앱 시작 후 %5    최근 1시간 %6    최근 24시간 %7\n증가속도 %8\n판정: %9")
+        processDetail->setText(ko("%1\nPID %2\n시작 메모리 %3 MB    현재 메모리 %4 MB\n평균 %5 MB    최저 %6 MB    최고 %7 MB\n앱 시작 후 %8    최근 1시간 %9    최근 24시간 %10\n증가속도 %11\n판정: %12")
                                    .arg(trend->name)
                                    .arg(trend->pid)
                                    .arg(trend->firstMb)
                                    .arg(trend->lastMb)
+                                   .arg(averageMb)
+                                   .arg(lowMb)
+                                   .arg(peakMb)
                                    .arg(deltaText)
                                    .arg(signedMb(oneHourDelta))
                                    .arg(signedMb(dayDelta))
@@ -2655,6 +2733,78 @@ private:
             .arg(nonPagedDelta);
     }
 
+    int recentBaselineLoad(int hoursBack) const {
+        QVector<LongTermPoint> points = loadLongTermPoints(hoursBack);
+        if (points.isEmpty()) {
+            return averageLoadToday();
+        }
+        quint64 total = 0;
+        int count = 0;
+        QDate today = QDate::currentDate();
+        for (const LongTermPoint &point : points) {
+            if (point.time.date() == today) {
+                continue;
+            }
+            total += quint64(point.load);
+            count++;
+        }
+        if (count == 0) {
+            for (const LongTermPoint &point : points) {
+                total += quint64(point.load);
+                count++;
+            }
+        }
+        return count > 0 ? int(total / quint64(count)) : averageLoadToday();
+    }
+
+    QString anomalySummary(const MemorySnapshot &snapshot) const {
+        int baseline = recentBaselineLoad(24 * 7);
+        if (baseline <= 0) {
+            baseline = averageLoadToday();
+        }
+        int diff = int(snapshot.load) - baseline;
+        if (diff >= 25) {
+            return ko("평소보다 RAM 사용률이 %1% 높습니다. 최근 설치/실행한 프로그램을 확인해보세요.").arg(diff);
+        }
+        if (diff >= 12) {
+            return ko("평소보다 RAM 사용률이 %1% 높아 관찰이 필요합니다.").arg(diff);
+        }
+        if (diff <= -12) {
+            return ko("평소보다 RAM 사용률이 %1% 낮아 안정적입니다.").arg(-diff);
+        }
+        return ko("평소 사용 패턴과 비슷합니다.");
+    }
+
+    QString pressurePredictionText(const MemorySnapshot &snapshot, int activeThreshold) const {
+        if (samples.size() < 6) {
+            return ko("압박 예측: 데이터 수집 중");
+        }
+        const MemorySnapshot &first = samples.first();
+        const MemorySnapshot &last = samples.last();
+        qint64 seconds = first.time.secsTo(last.time);
+        if (seconds < 60 || last.load <= first.load) {
+            return ko("압박 예측: 현재 증가 속도는 낮음");
+        }
+        double percentPerMinute = double(int(last.load) - int(first.load)) * 60.0 / double(seconds);
+        if (percentPerMinute <= 0.05) {
+            return ko("압박 예측: 현재 증가 속도는 낮음");
+        }
+        auto estimate = [&](int target) -> int {
+            if (int(snapshot.load) >= target) {
+                return 0;
+            }
+            return int(std::ceil(double(target - int(snapshot.load)) / percentPerMinute));
+        };
+        int thresholdMinutes = estimate(activeThreshold);
+        int criticalMinutes = estimate(90);
+        if (thresholdMinutes == 0) {
+            return ko("압박 예측: 이미 자동 정리 기준 근처입니다.");
+        }
+        return ko("압박 예측: 현재 추세라면 약 %1분 후 기준 도달, 약 %2분 후 RAM 90% 예상")
+            .arg(thresholdMinutes)
+            .arg(criticalMinutes);
+    }
+
     qint64 longTermNonPagedDelta(int hoursBack) const {
         if (hoursBack == 24 * 7) {
             qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -2729,14 +2879,52 @@ private:
             status = ko("주의");
         }
 
-        return ko("<b>시스템 상태: %1</b><br>학습 신뢰도: %2 (%3%)<br>RAM 누수: %4<br>커널 메모리: %5<br>커밋 사용률: %6<br>의심 프로세스: %7")
-            .arg(status)
+        int healthScore = 100;
+        healthScore -= std::clamp((int(snapshot.load) - 60) * 2, 0, 50);
+        if (snapshot.commitLimitMb > 0) {
+            int commitPercent = int(snapshot.commitMb * 100 / snapshot.commitLimitMb);
+            healthScore -= std::clamp((commitPercent - 75) * 2, 0, 30);
+        }
+        if (!growth.isEmpty()) {
+            healthScore -= 15;
+        }
+        if (snapshot.nonPagedPoolMb >= 1024 && nonPaged7d > 128) {
+            healthScore -= 15;
+        }
+        healthScore = std::clamp(healthScore, 0, 100);
+        QString healthGrade = healthScore >= 90 ? ko("매우 양호")
+                              : healthScore >= 72 ? ko("양호")
+                              : healthScore >= 45 ? ko("주의")
+                                                   : ko("심각");
+        QString recommendation = growth.isEmpty()
+                                     ? ko("현재는 자동 정리보다 모니터링 유지가 적절합니다.")
+                                     : ko("자동 정리보다 의심 프로세스 확인을 권장합니다.");
+
+        return ko("<b>메모리 건강도: %1점 · %2</b><br>오늘 분석: %3<br>%4<br>%5<br>%6<br>학습 신뢰도: %7 (%8%)<br>RAM 누수: %9<br>커널 메모리: %10<br>커밋 사용률: %11<br>의심 프로세스: %12")
+            .arg(healthScore)
+            .arg(healthGrade)
+            .arg(anomalySummary(snapshot))
+            .arg(processCauseSummary())
+            .arg(pressurePredictionText(snapshot, autoTune->isChecked() ? adaptiveThreshold : threshold->value()))
+            .arg(recommendation)
             .arg(learningConfidenceText())
             .arg(learningProgressPercent())
             .arg(growth.isEmpty() ? ko("없음") : ko("관찰 필요"))
             .arg(kernelLeak)
             .arg(commitUsageText(snapshot))
             .arg(ramLeak);
+    }
+
+    QString diagnosticStatusText(const MemorySnapshot &snapshot) const {
+        QString growth = biggestGrowthText();
+        qint64 nonPaged7d = longTermNonPagedDelta(24 * 7);
+        if (snapshot.load >= 90 || (snapshot.commitLimitMb > 0 && snapshot.commitMb * 100 / snapshot.commitLimitMb >= 92)) {
+            return ko("주의");
+        }
+        if (!growth.isEmpty() || (snapshot.nonPagedPoolMb >= 1024 && nonPaged7d > 128)) {
+            return ko("관찰 필요");
+        }
+        return ko("양호");
     }
 
     int selectedTrendHours() const {

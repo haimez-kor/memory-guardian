@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.15"
+$version = "v1.3.16"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Reduces lag when opening the Process page by limiting rendered rows and avoiding expensive per-process icon extraction."
+    notes = "Adds daily memory health analysis with baseline anomaly detection, cause summaries, pressure prediction, and process RAM statistics."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,8 +42,13 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.15
+## Memory Guardian 1.3.16
 
+- Add daily memory health analysis comparing current RAM use against recent baseline history
+- Add natural-language dashboard summary for whether today's memory state is unusual
+- Add automatic cause summary from the top RAM-growing processes
+- Add memory pressure prediction for when the current trend may reach the cleanup threshold or 90% RAM
+- Add process detail stats for average, lowest, and peak RAM while observed
 - Reduce Process page lag by rendering only the top 80 processes by default
 - Show up to 200 rows while searching instead of rebuilding every process row
 - Avoid expensive Windows executable icon extraction during process table refresh
@@ -132,10 +137,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.15" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.16" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.15" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.16" --notes $notes --latest
 }
 
 Write-Host ""
