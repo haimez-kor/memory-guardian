@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.3.12",
+    "version":  "1.3.14",
     "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/MemoryGuardianSetup.exe",
-    "sha256":  "61C09778AED4AB6FE5047D2AF0F0603C6166741F579EA1D334318C24846E5CCE",
+    "sha256":  "136BF34EAFB470D9A1684CA913BEE4885072E0C8D6C420C8D9A4C6B0959427D8",
     "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/latest/download/SHA256SUMS.txt",
-    "notes":  "Updates the HAIMEZ shield icon with a larger mark for clearer taskbar, tray, shortcut, and installer branding."
+    "notes":  "Adds smarter scoring with learning confidence, detailed deductions, score-change logs, baseline anomaly detection, and game-mode cleanup protection."
 }
