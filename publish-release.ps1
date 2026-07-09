@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.16"
+$version = "v1.3.17"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Adds daily memory health analysis with baseline anomaly detection, cause summaries, pressure prediction, and process RAM statistics."
+    notes = "Moves project documents into docs and keeps installer cleanup focused on app documentation/runtime files."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -34,7 +34,7 @@ Write-Host ""
 
 git status --short --branch
 git add -u
-git add update.json SHA256SUMS.txt ERROR_REPORTING.md
+git add update.json SHA256SUMS.txt README.md docs installer/install.ps1
 git diff --cached --quiet
 if ($LASTEXITCODE -ne 0) {
     git commit -m "Update release metadata for $version"
@@ -42,8 +42,13 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.16
+## Memory Guardian 1.3.17
 
+- Move README, license, user agreement, and error reporting notices into the docs folder
+- Keep a small root README that points to the full documentation
+- Package the docs folder with the app while preserving legacy root document copies for compatibility
+- Keep installer cleanup focused on app documentation/runtime files so reports and user settings remain untouched
+- Make the legacy PowerShell uninstaller avoid deleting learned reports and local history data
 - Add daily memory health analysis comparing current RAM use against recent baseline history
 - Add natural-language dashboard summary for whether today's memory state is unusual
 - Add automatic cause summary from the top RAM-growing processes
@@ -137,10 +142,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.16" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.17" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.16" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.17" --notes $notes --latest
 }
 
 Write-Host ""

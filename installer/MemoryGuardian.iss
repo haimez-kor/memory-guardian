@@ -1,5 +1,5 @@
 ﻿#define AppName "Memory Guardian"
-#define AppVersion "1.3.16"
+#define AppVersion "1.3.17"
 #define AppPublisher "HAIMEZ"
 #define AppURL "https://github.com/haimez-kor/memory-guardian"
 
@@ -39,7 +39,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startup"; Description: "Start Memory Guardian in the background when Windows starts"; GroupDescription: "Startup"
 
 [Files]
-Source: "..\dist-app-v1.3.16\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist-app-v1.3.17\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
 Type: files; Name: "{app}\MemoryGuardian.exe"
@@ -50,6 +50,8 @@ Type: files; Name: "{app}\USER_AGREEMENT.md"
 Type: files; Name: "{app}\USER_AGREEMENT.en.md"
 Type: files; Name: "{app}\README.ko.md"
 Type: files; Name: "{app}\README.en.md"
+Type: files; Name: "{app}\ERROR_REPORTING.md"
+Type: filesandordirs; Name: "{app}\docs"
 Type: filesandordirs; Name: "{app}\generic"
 Type: filesandordirs; Name: "{app}\imageformats"
 Type: filesandordirs; Name: "{app}\networkinformation"

@@ -81,7 +81,44 @@ $taskName = "Memory Guardian Background Protection"
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) "메모리 자동 보호기.lnk") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath("CommonPrograms")) "Memory Guardian") -Recurse -Force -ErrorAction SilentlyContinue
-Start-Process cmd -WindowStyle Hidden -ArgumentList "/c timeout /t 2 >nul & rmdir /s /q `"$installDir`""
+
+$filesToRemove = @(
+    "MemoryGuardian.exe",
+    "MemoryGuardianQt.exe",
+    "update.json",
+    "LICENSE",
+    "USER_AGREEMENT.md",
+    "USER_AGREEMENT.en.md",
+    "ERROR_REPORTING.md",
+    "README.ko.md",
+    "README.en.md"
+)
+
+$foldersToRemove = @(
+    "docs",
+    "generic",
+    "imageformats",
+    "networkinformation",
+    "platforms",
+    "styles",
+    "tls"
+)
+
+Get-ChildItem $installDir -Filter "*.dll" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+foreach ($file in $filesToRemove) {
+    Remove-Item (Join-Path $installDir $file) -Force -ErrorAction SilentlyContinue
+}
+foreach ($folder in $foldersToRemove) {
+    Remove-Item (Join-Path $installDir $folder) -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Keep reports, logs, learned settings, and other user data unless the user removes them manually.
+Get-ChildItem $installDir -Force -ErrorAction SilentlyContinue | Where-Object {
+    -not $_.PSIsContainer -and
+    $_.Name -ne "profile.ini" -and
+    $_.Name -ne "memory_history.csv" -and
+    $_.Name -ne "process_history.csv"
+} | Remove-Item -Force -ErrorAction SilentlyContinue
 '@
 
 Set-Content -Path (Join-Path $installDir "uninstall.ps1") -Value $uninstall -Encoding UTF8

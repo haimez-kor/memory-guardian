@@ -6,7 +6,7 @@ set PATH=C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
 call build.bat
 if errorlevel 1 exit /b 1
 
-set DIST=dist-app-v1.3.16
+set DIST=dist-app-v1.3.17
 if exist "%DIST%" rmdir /S /Q "%DIST%"
 mkdir "%DIST%"
 
@@ -16,12 +16,13 @@ for %%D in (generic imageformats networkinformation platforms styles tls) do (
   if exist "build\%%D" xcopy /E /I /Y "build\%%D" "%DIST%\%%D" >nul
 )
 copy /Y installer\update.json "%DIST%\update.json" >nul
-copy /Y LICENSE "%DIST%\LICENSE" >nul
-copy /Y USER_AGREEMENT.md "%DIST%\USER_AGREEMENT.md" >nul
-copy /Y USER_AGREEMENT.en.md "%DIST%\USER_AGREEMENT.en.md" >nul
-copy /Y ERROR_REPORTING.md "%DIST%\ERROR_REPORTING.md" >nul
-copy /Y README.md "%DIST%\README.ko.md" >nul
-copy /Y README.en.md "%DIST%\README.en.md" >nul
+xcopy /E /I /Y docs "%DIST%\docs" >nul
+copy /Y docs\LICENSE "%DIST%\LICENSE" >nul
+copy /Y docs\USER_AGREEMENT.md "%DIST%\USER_AGREEMENT.md" >nul
+copy /Y docs\USER_AGREEMENT.en.md "%DIST%\USER_AGREEMENT.en.md" >nul
+copy /Y docs\ERROR_REPORTING.md "%DIST%\ERROR_REPORTING.md" >nul
+copy /Y docs\README.md "%DIST%\README.ko.md" >nul
+copy /Y docs\README.en.md "%DIST%\README.en.md" >nul
 
 if not "%~1"=="" set "ISCC=%~1"
 if defined INNO_ISCC set "ISCC=%INNO_ISCC%"
