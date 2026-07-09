@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.14"
+$version = "v1.3.15"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Adds smarter scoring with learning confidence, detailed deductions, score-change logs, baseline anomaly detection, and game-mode cleanup protection."
+    notes = "Reduces lag when opening the Process page by limiting rendered rows and avoiding expensive per-process icon extraction."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,8 +42,12 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.14
+## Memory Guardian 1.3.15
 
+- Reduce Process page lag by rendering only the top 80 processes by default
+- Show up to 200 rows while searching instead of rebuilding every process row
+- Avoid expensive Windows executable icon extraction during process table refresh
+- Keep full process monitoring and leak tracking active in the background
 - Add learning confidence for adaptive threshold trust
 - Add detailed score deductions for RAM pressure, free memory, trend, commit pressure, and baseline anomaly
 - Add baseline anomaly scoring when RAM usage is much higher than today's learned average
@@ -128,10 +132,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.14" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.15" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.14" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.15" --notes $notes --latest
 }
 
 Write-Host ""

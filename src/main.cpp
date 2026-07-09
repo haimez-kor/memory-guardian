@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.14";
+static const char *APP_VERSION = "1.3.15";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -2243,15 +2243,24 @@ private:
                 visibleProcesses.push_back(process);
             }
         }
+        int matchedCount = visibleProcesses.size();
+        int renderLimit = query.isEmpty() ? 80 : 200;
+        if (visibleProcesses.size() > renderLimit) {
+            visibleProcesses.resize(renderLimit);
+        }
         if (processCountLabel) {
             processCountLabel->setText(query.isEmpty()
-                                           ? ko("전체 %1개").arg(processes.size())
-                                           : ko("검색 %1개 / 전체 %2개").arg(visibleProcesses.size()).arg(processes.size()));
+                                           ? ko("상위 %1개 표시 / 전체 %2개").arg(visibleProcesses.size()).arg(processes.size())
+                                           : ko("검색 %1개 표시 / 검색 결과 %2개 / 전체 %3개")
+                                                 .arg(visibleProcesses.size())
+                                                 .arg(matchedCount)
+                                                 .arg(processes.size()));
         }
 
         topProcesses->setUpdatesEnabled(false);
+        topProcesses->setSortingEnabled(false);
         topProcesses->setRowCount(visibleProcesses.size());
-        QFileIconProvider iconProvider;
+        QIcon defaultProcessIcon = style()->standardIcon(QStyle::SP_ComputerIcon);
         int rank = 0;
         int selectedRow = -1;
         for (const ProcessUsage &process : visibleProcesses) {
@@ -2268,14 +2277,7 @@ private:
             nameItem->setData(Qt::UserRole, key);
             nameItem->setToolTip(ko("%1\nPID %2").arg(process.executablePath.isEmpty() ? process.name : process.executablePath)
                                                      .arg(process.pid));
-            QString iconKey = process.executablePath.isEmpty() ? process.name : process.executablePath;
-            if (!processIconCache.contains(iconKey)) {
-                QIcon icon = process.executablePath.isEmpty()
-                                 ? style()->standardIcon(QStyle::SP_ComputerIcon)
-                                 : iconProvider.icon(QFileInfo(process.executablePath));
-                processIconCache.insert(iconKey, icon);
-            }
-            nameItem->setIcon(processIconCache.value(iconKey));
+            nameItem->setIcon(defaultProcessIcon);
 
             auto *usageItem = new QTableWidgetItem(ko("%1 MB").arg(process.usedMb));
             usageItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
