@@ -9,7 +9,7 @@
 #include <tlhelp32.h>
 
 using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.13";
+static const char *APP_VERSION = "1.3.14";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -86,6 +86,8 @@ struct QiState {
     int pressure = 0;
     int available = 0;
     int trend = 0;
+    int commit = 0;
+    int baseline = 0;
     bool shouldOptimize = false;
 };
 
@@ -538,7 +540,7 @@ static QString optimizeMemory() {
     return ko("정리를 시도했지만 권한이 부족할 수 있습니다. 관리자 권한 실행을 권장합니다.");
 }
 
-static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold) {
+static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold, int baselineLoad = -1) {
     QiState qi;
     if (samples.isEmpty()) {
         return qi;
@@ -560,10 +562,23 @@ static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold)
         trendPenalty = std::clamp((int(newest.load) - int(oldest.load)) * 3, 0, 30);
     }
 
+    int commitPenalty = 0;
+    if (newest.commitLimitMb > 0) {
+        int commitPercent = int(newest.commitMb * 100 / newest.commitLimitMb);
+        commitPenalty = std::clamp((commitPercent - 72) * 2, 0, 24);
+    }
+
+    int baselinePenalty = 0;
+    if (baselineLoad >= 0 && int(newest.load) > baselineLoad + 12) {
+        baselinePenalty = std::clamp((int(newest.load) - baselineLoad - 12) * 2, 0, 24);
+    }
+
     qi.pressure = pressurePenalty;
     qi.available = availablePenalty;
     qi.trend = trendPenalty;
-    qi.score = std::clamp(100 - pressurePenalty - availablePenalty - trendPenalty, 0, 100);
+    qi.commit = commitPenalty;
+    qi.baseline = baselinePenalty;
+    qi.score = std::clamp(100 - pressurePenalty - availablePenalty - trendPenalty - commitPenalty - baselinePenalty, 0, 100);
     qi.shouldOptimize = newest.load >= DWORD(threshold) || qi.score <= 45;
     return qi;
 }
@@ -1059,6 +1074,7 @@ private:
     int optimizeCheckSamples = 0;
     int ineffectiveOptimizeCount = 0;
     DWORD peakLoad = 0;
+    int lastLoggedQiScore = -1;
     bool quitRequested = false;
     bool trayNoticeShown = false;
     bool startedInBackground = false;
@@ -1106,6 +1122,64 @@ private:
 
     QString signedMb(qint64 value) const {
         return value >= 0 ? ko("+%1 MB").arg(value) : ko("%1 MB").arg(value);
+    }
+
+    int learningProgressPercent() const {
+        return std::clamp(coveredHours() * 100 / 24, 0, 100);
+    }
+
+    QString learningConfidenceText() const {
+        int progress = learningProgressPercent();
+        if (learnedThreshold > 0 || coveredHours() >= 18) {
+            return ko("높음");
+        }
+        if (totalSampleCount >= 1800 || progress >= 40) {
+            return ko("보통");
+        }
+        return ko("낮음");
+    }
+
+    QString qiPrimaryReason(const QiState &qi) const {
+        int best = qi.pressure;
+        QString reason = ko("RAM 압박");
+        if (qi.available > best) {
+            best = qi.available;
+            reason = ko("여유 메모리 부족");
+        }
+        if (qi.trend > best) {
+            best = qi.trend;
+            reason = ko("최근 증가 추세");
+        }
+        if (qi.commit > best) {
+            best = qi.commit;
+            reason = ko("커밋 메모리 압박");
+        }
+        if (qi.baseline > best) {
+            best = qi.baseline;
+            reason = ko("평소 대비 급변");
+        }
+        return best > 0 ? reason : ko("감점 없음");
+    }
+
+    bool gamingModeActive() const {
+        return usageMode && usageMode->currentIndex() == GamingMode;
+    }
+
+    QString detectedGameProcess() const {
+        static const QStringList gameNames = {
+            "steam.exe", "epicgameslauncher.exe", "battle.net.exe", "overwatch.exe",
+            "valorant.exe", "leagueoflegends.exe", "minecraft.exe", "javaw.exe",
+            "raft.exe", "palworld-win64-shipping.exe", "fortniteclient-win64-shipping.exe"
+        };
+        for (const ProcessUsage &process : latestProcesses) {
+            QString name = process.name.toLower();
+            for (const QString &game : gameNames) {
+                if (name == game || name.contains(game.section('.', 0, 0))) {
+                    return process.name;
+                }
+            }
+        }
+        return QString();
     }
 
     QWidget *makeMetric(const QString &labelText, QLabel *value, QWidget *sideWidget = nullptr) {
@@ -1522,7 +1596,7 @@ private:
             threshold->setValue(activeThreshold);
         }
 
-        QiState qi = evaluateQi(samples, activeThreshold);
+        QiState qi = evaluateQi(samples, activeThreshold, totalSampleCount > 0 ? averageLoadToday() : -1);
         qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (latestProcesses.isEmpty() || lastProcessScanMs == 0 || now - lastProcessScanMs >= 10000) {
             latestProcesses = readTopProcesses();
@@ -1530,6 +1604,7 @@ private:
             lastProcessScanMs = now;
         }
         updateUi(snapshot, qi, activeThreshold);
+        logQiChange(qi);
 
         if (processPageVisible() && (lastProcessUiRefreshMs == 0 || now - lastProcessUiRefreshMs >= 15000)) {
             updateTopProcesses(latestProcesses);
@@ -1553,6 +1628,13 @@ private:
             && now >= optimizeSuppressedUntilMs
             && now - lastOptimizeMs > 60000
             && !optimizeEffectPending) {
+            QString gameProcess = gamingModeActive() ? detectedGameProcess() : QString();
+            if (!gameProcess.isEmpty()) {
+                lastOptimizeMs = now;
+                appendLog(ko("게임 모드: %1 실행 중이라 자동 정리는 건너뛰고 모니터링만 유지합니다.").arg(gameProcess));
+                appendTrendEvent(ko("게임 중 자동 정리 보류"), "warning");
+                return;
+            }
             lastOptimizeMs = now;
             lastOptimizeLoad = int(snapshot.load);
             optimizeCheckSamples = 0;
@@ -1568,6 +1650,29 @@ private:
             }
             writeDailyReport();
         }
+    }
+
+    void logQiChange(const QiState &qi) {
+        if (lastLoggedQiScore < 0) {
+            lastLoggedQiScore = qi.score;
+            return;
+        }
+        if (std::abs(qi.score - lastLoggedQiScore) < 20 && !(lastLoggedQiScore > 70 && qi.score <= 55)) {
+            return;
+        }
+
+        QString growth = biggestGrowthText();
+        appendLog(growth.isEmpty()
+                      ? ko("최적화 점수 변화 %1점 → %2점, 주요 원인: %3")
+                            .arg(lastLoggedQiScore)
+                            .arg(qi.score)
+                            .arg(qiPrimaryReason(qi))
+                      : ko("최적화 점수 변화 %1점 → %2점, 주요 원인: %3, 의심 프로세스: %4")
+                            .arg(lastLoggedQiScore)
+                            .arg(qi.score)
+                            .arg(qiPrimaryReason(qi))
+                            .arg(growth));
+        lastLoggedQiScore = qi.score;
     }
 
     void checkOptimizeEffect(const MemorySnapshot &snapshot, qint64 now) {
@@ -1840,7 +1945,7 @@ private:
         }
 
         int activeThreshold = autoTune->isChecked() ? adaptiveThreshold : threshold->value();
-        QiState qi = evaluateQi(samples, activeThreshold);
+        QiState qi = evaluateQi(samples, activeThreshold, totalSampleCount > 0 ? averageLoadToday() : -1);
         const MemorySnapshot &snapshot = samples.last();
         QString modeText = usageModeName();
         QString actionText = qi.shouldOptimize
@@ -1852,28 +1957,37 @@ private:
                                  ko("최적화 점수는 100점에서 위험 요소를 빼는 방식입니다.\n\n"
                                     "현재 점수: %1점\n"
                                     "운영 모드: %2\n"
-                                    "자동 정리 기준: %3%\n\n"
+                                    "자동 정리 기준: %3%\n"
+                                    "학습 신뢰도: %4 (%5%)\n\n"
                                     "감점 내역\n"
-                                    "- RAM 사용 압박: -%4점\n"
-                                    "- 여유 메모리 부족: -%5점\n"
-                                    "- 최근 RAM 증가 추세: -%6점\n\n"
+                                    "- RAM 사용 압박: 현재 %6%, 오늘 평균 %7%, -%8점\n"
+                                    "- 여유 메모리 부족: 여유 %9 MB, -%10점\n"
+                                    "- 최근 RAM 증가 추세: -%11점\n"
+                                    "- 커밋 메모리 압박: %12 / %13 MB, -%14점\n"
+                                    "- 평소 대비 급변: -%15점\n\n"
                                     "현재 상태\n"
-                                    "- RAM 사용률: %7%\n"
-                                    "- 사용 중 RAM: %8 MB\n"
-                                    "- 여유 RAM: %9 MB\n"
-                                    "- 커밋 메모리: %10 / %11 MB\n\n"
-                                    "%12")
+                                    "- 사용 중 RAM: %16 MB\n"
+                                    "- Non-Paged Pool: %17 MB\n"
+                                    "- 주요 원인: %18\n\n"
+                                    "%19")
                                      .arg(qi.score)
                                      .arg(modeText)
                                      .arg(activeThreshold)
+                                     .arg(learningConfidenceText())
+                                     .arg(learningProgressPercent())
+                                     .arg(snapshot.load)
+                                     .arg(averageLoadToday())
                                      .arg(qi.pressure)
+                                     .arg(snapshot.availableMb)
                                      .arg(qi.available)
                                      .arg(qi.trend)
-                                     .arg(snapshot.load)
-                                     .arg(snapshot.usedMb)
-                                     .arg(snapshot.availableMb)
                                      .arg(snapshot.commitMb)
                                      .arg(snapshot.commitLimitMb)
+                                     .arg(qi.commit)
+                                     .arg(qi.baseline)
+                                     .arg(snapshot.usedMb)
+                                     .arg(snapshot.nonPagedPoolMb)
+                                     .arg(qiPrimaryReason(qi))
                                      .arg(actionText));
     }
 
@@ -2574,16 +2688,21 @@ private:
                                 ? int(snapshot.commitMb * 100 / snapshot.commitLimitMb)
                                 : 0;
         QString poolText = snapshot.nonPagedPoolMb >= 1024 ? ko("관찰 필요") : ko("정상");
-        qiScore->setToolTip(ko("RAM 사용률: %1%\n커밋 사용률: %2%\nNon-Paged Pool: %3 (%4 MB)\n운영 모드: %5\n자동 정리 기준: %6%\n\n감점: RAM -%7 / 여유 -%8 / 증가 추세 -%9\n점수 계산 결과: %10점")
+        qiScore->setToolTip(ko("RAM 사용률: %1%\n오늘 평균 RAM: %2%\n커밋 사용률: %3%\nNon-Paged Pool: %4 (%5 MB)\n운영 모드: %6\n자동 정리 기준: %7%\n학습 신뢰도: %8 (%9%)\n\n감점 상세\nRAM 압박: -%10점\n여유 메모리: -%11점\n최근 증가 추세: -%12점\n커밋 압박: -%13점\n평소 대비 급변: -%14점\n\n점수 계산 결과: %15점")
                                 .arg(snapshot.load)
+                                .arg(averageLoadToday())
                                 .arg(commitPercent)
                                 .arg(poolText)
                                 .arg(snapshot.nonPagedPoolMb)
                                 .arg(usageModeName())
                                 .arg(activeThreshold)
+                                .arg(learningConfidenceText())
+                                .arg(learningProgressPercent())
                                 .arg(qi.pressure)
                                 .arg(qi.available)
                                 .arg(qi.trend)
+                                .arg(qi.commit)
+                                .arg(qi.baseline)
                                 .arg(qi.score));
     }
 
@@ -2608,8 +2727,10 @@ private:
             status = ko("주의");
         }
 
-        return ko("<b>시스템 상태: %1</b><br>RAM 누수: %2<br>커널 메모리: %3<br>커밋 사용률: %4<br>의심 프로세스: %5")
+        return ko("<b>시스템 상태: %1</b><br>학습 신뢰도: %2 (%3%)<br>RAM 누수: %4<br>커널 메모리: %5<br>커밋 사용률: %6<br>의심 프로세스: %7")
             .arg(status)
+            .arg(learningConfidenceText())
+            .arg(learningProgressPercent())
             .arg(growth.isEmpty() ? ko("없음") : ko("관찰 필요"))
             .arg(kernelLeak)
             .arg(commitUsageText(snapshot))
@@ -3000,7 +3121,7 @@ private:
         }
         QTextStream out(&file);
         if (fresh) {
-            out << "time,load_percent,used_mb,total_mb,available_mb,commit_mb,commit_limit_mb,page_file_used_mb,page_file_total_mb,non_paged_pool_mb,paged_pool_mb,qi_score,threshold,optimize_count\n";
+            out << "time,load_percent,used_mb,total_mb,available_mb,commit_mb,commit_limit_mb,page_file_used_mb,page_file_total_mb,non_paged_pool_mb,paged_pool_mb,qi_score,qi_pressure_penalty,qi_available_penalty,qi_trend_penalty,qi_commit_penalty,qi_baseline_penalty,learning_confidence,threshold,optimize_count\n";
         }
         out << snapshot.time.toString(Qt::ISODate) << ','
             << snapshot.load << ','
@@ -3014,6 +3135,12 @@ private:
             << snapshot.nonPagedPoolMb << ','
             << snapshot.pagedPoolMb << ','
             << qi.score << ','
+            << qi.pressure << ','
+            << qi.available << ','
+            << qi.trend << ','
+            << qi.commit << ','
+            << qi.baseline << ','
+            << '"' << learningConfidenceText() << '"' << ','
             << activeThreshold << ','
             << optimizeCount << '\n';
     }

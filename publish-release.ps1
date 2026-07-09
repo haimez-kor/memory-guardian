@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.13"
+$version = "v1.3.14"
 $displayVersion = $version.TrimStart("v")
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
@@ -21,7 +21,7 @@ $manifest = [ordered]@{
     downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Improves Memory Guardian diagnostics with clearer health summaries, score explanations, process deltas, colored logs, and trend event markers."
+    notes = "Adds smarter scoring with learning confidence, detailed deductions, score-change logs, baseline anomaly detection, and game-mode cleanup protection."
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
 
@@ -42,8 +42,14 @@ if ($LASTEXITCODE -ne 0) {
 git push origin main
 
 $notes = @"
-## Memory Guardian 1.3.13
+## Memory Guardian 1.3.14
 
+- Add learning confidence for adaptive threshold trust
+- Add detailed score deductions for RAM pressure, free memory, trend, commit pressure, and baseline anomaly
+- Add baseline anomaly scoring when RAM usage is much higher than today's learned average
+- Log large optimization score changes with the primary cause and suspicious process
+- Save score deduction details to the memory CSV history for later reports
+- In Gaming mode, skip automatic cleanup while a likely game process is running and keep monitoring only
 - Add a dashboard memory diagnosis summary for system health, RAM leak status, kernel memory, commit usage, and suspicious processes
 - Add live optimization score tooltips explaining RAM, commit, Non-Paged Pool, mode, threshold, and deduction details
 - Change scary leak wording into clearer observation-focused messages with 7-day Non-Paged Pool trend context
@@ -122,10 +128,10 @@ $ErrorActionPreference = $previousErrorActionPreference
 if ($releaseExists) {
     Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
     gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.13" --notes $notes --latest
+    gh release edit $version --repo $repo --title "Memory Guardian 1.3.14" --notes $notes --latest
 } else {
     Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.13" --notes $notes --latest
+    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.14" --notes $notes --latest
 }
 
 Write-Host ""
