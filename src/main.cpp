@@ -3,13 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <future>
+#include <chrono>
 #include <windows.h>
 #include <psapi.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
 
-using NtSetSystemInformationProc = LONG (WINAPI *)(ULONG, PVOID, ULONG);
-static const char *APP_VERSION = "1.3.17";
+static const char *APP_VERSION = "1.3.18";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
@@ -68,6 +69,7 @@ static QString quotedArgument(const QString &value) {
 }
 
 struct MemorySnapshot {
+    bool valid = false;
     QDateTime time;
     DWORD load = 0;
     quint64 totalMb = 0;
@@ -104,6 +106,8 @@ struct ProcessUsage {
     QString executablePath;
     DWORD pid = 0;
     quint64 usedMb = 0;
+    quint64 privateMb = 0;
+    quint64 creationId = 0;
 };
 
 struct ProcessTrend {
@@ -111,6 +115,8 @@ struct ProcessTrend {
     DWORD pid = 0;
     quint64 firstMb = 0;
     quint64 lastMb = 0;
+    quint64 privateMb = 0;
+    quint64 creationId = 0;
     QDateTime firstSeen;
     QDateTime lastSeen;
 };
@@ -118,7 +124,71 @@ struct ProcessTrend {
 struct ProcessHistoryPoint {
     QDateTime time;
     quint64 usedMb = 0;
+    quint64 privateMb = 0;
 };
+
+static void recordProcessSample(QVector<ProcessHistoryPoint> &history, const ProcessHistoryPoint &point) {
+    if (!history.isEmpty() && history.last().time.secsTo(point.time) > 120) history.clear();
+    if (history.isEmpty() || history.last().time.secsTo(point.time) >= 30) history.push_back(point);
+    while (!history.isEmpty() && history.first().time.secsTo(point.time) > 86400) history.removeFirst();
+}
+
+struct LeakEvidence {
+    QString label = ko("관찰 중");
+    QString reason = ko("연속 30분 이상의 Private Bytes 기록이 필요합니다.");
+    qint64 deltaMb = 0;
+    double rateMbHour = 0;
+};
+
+static LeakEvidence analyzeLeak(const QVector<ProcessHistoryPoint> &history, bool developerMode = false) {
+    LeakEvidence result;
+    if (history.size() < 2) return result;
+    const auto cutoff = history.last().time.addSecs(-3600);
+    QVector<ProcessHistoryPoint> window;
+    for (const auto &point : history) if (point.time >= cutoff) window.push_back(point);
+    if (window.size() < 2) return result;
+    for (int i = 1; i < window.size(); ++i) {
+        const auto gap = window[i - 1].time.secsTo(window[i].time);
+        if (gap <= 0 || gap > 120) {
+            result.reason = ko("측정 공백 또는 시각 변경으로 연속 기록이 부족합니다.");
+            return result;
+        }
+    }
+    const auto seconds = window.first().time.secsTo(window.last().time);
+    if (seconds < 1800) return result;
+    result.deltaMb = qint64(window.last().privateMb) - qint64(window.first().privateMb);
+    result.rateMbHour = double(result.deltaMb) * 3600.0 / double(seconds);
+    int growing = 0, intervals = 0;
+    auto base = window.first();
+    quint64 peak = base.privateMb;
+    quint64 largestDrop = 0;
+    for (const auto &point : window) {
+        peak = std::max(peak, point.privateMb);
+        largestDrop = std::max(largestDrop, peak - point.privateMb);
+        if (base.time.secsTo(point.time) >= 300) {
+            ++intervals;
+            if (point.privateMb > base.privateMb + 8) ++growing;
+            base = point;
+        }
+    }
+    const int minimumDelta = developerMode ? 768 : 384;
+    const bool sustained = intervals >= 6 && growing * 4 >= intervals * 3;
+    const bool recovered = largestDrop >= quint64(std::max<qint64>(64, result.deltaMb / 2));
+    if (result.deltaMb >= minimumDelta && result.rateMbHour >= 128 && sustained && !recovered) {
+        result.label = ko("누수 의심");
+    } else if (result.deltaMb < -32) {
+        result.label = ko("감소 중");
+    } else if (recovered) {
+        result.label = ko("증가 후 회수 관측");
+    } else if (result.deltaMb >= 128) {
+        result.label = ko("증가 관찰 필요");
+    } else {
+        result.label = ko("관측 범위 내 안정");
+    }
+    result.reason = ko("관측 %1분 · Private Bytes 변화 %2 MB · %3 MB/h · 5분 구간 %4/%5 증가. 누수 확정이나 확률이 아닙니다.")
+        .arg(seconds / 60).arg(result.deltaMb).arg(result.rateMbHour, 0, 'f', 1).arg(growing).arg(intervals);
+    return result;
+}
 
 struct ServerProcessSummary {
     int node = 0;
@@ -429,19 +499,32 @@ private:
     }
 };
 
+static BOOL CALLBACK collectPageFiles(LPVOID context, PENUM_PAGE_FILE_INFORMATION info, LPCWSTR) {
+    auto *snapshot = static_cast<MemorySnapshot *>(context);
+    SYSTEM_INFO system {};
+    GetSystemInfo(&system);
+    snapshot->pageFileUsedMb += quint64(info->TotalInUse) * system.dwPageSize / (1024ULL * 1024ULL);
+    snapshot->pageFileTotalMb += quint64(info->TotalSize) * system.dwPageSize / (1024ULL * 1024ULL);
+    return TRUE;
+}
+
 static MemorySnapshot readMemory() {
     MEMORYSTATUSEX memory {};
     memory.dwLength = sizeof(memory);
-    GlobalMemoryStatusEx(&memory);
-
     MemorySnapshot snapshot;
     snapshot.time = QDateTime::currentDateTime();
+    if (!GlobalMemoryStatusEx(&memory) || memory.ullTotalPhys == 0) {
+        return snapshot;
+    }
+    snapshot.valid = true;
     snapshot.load = memory.dwMemoryLoad;
     snapshot.totalMb = memory.ullTotalPhys / (1024ULL * 1024ULL);
     snapshot.availableMb = memory.ullAvailPhys / (1024ULL * 1024ULL);
     snapshot.usedMb = snapshot.totalMb - snapshot.availableMb;
-    snapshot.pageFileTotalMb = memory.ullTotalPageFile / (1024ULL * 1024ULL);
-    snapshot.pageFileUsedMb = (memory.ullTotalPageFile - memory.ullAvailPageFile) / (1024ULL * 1024ULL);
+    if (!EnumPageFilesW(collectPageFiles, &snapshot)) {
+        snapshot.valid = false;
+        return snapshot;
+    }
 
     PERFORMANCE_INFORMATION perf {};
     perf.cb = sizeof(perf);
@@ -450,6 +533,8 @@ static MemorySnapshot readMemory() {
         snapshot.commitLimitMb = quint64(perf.CommitLimit) * perf.PageSize / (1024ULL * 1024ULL);
         snapshot.nonPagedPoolMb = quint64(perf.KernelNonpaged) * perf.PageSize / (1024ULL * 1024ULL);
         snapshot.pagedPoolMb = quint64(perf.KernelPaged) * perf.PageSize / (1024ULL * 1024ULL);
+    } else {
+        snapshot.valid = false;
     }
     return snapshot;
 }
@@ -484,6 +569,11 @@ static QVector<ProcessUsage> readTopProcesses(int limit = 0) {
                 usage.name = QString::fromWCharArray(entry.szExeFile);
                 usage.pid = entry.th32ProcessID;
                 usage.usedMb = mb;
+                usage.privateMb = counters.PrivateUsage / (1024ULL * 1024ULL);
+                FILETIME created {}, exited {}, kernel {}, user {};
+                if (GetProcessTimes(process, &created, &exited, &kernel, &user)) {
+                    usage.creationId = (quint64(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+                }
                 wchar_t pathBuffer[32768] {};
                 DWORD pathLength = 32768;
                 if (QueryFullProcessImageNameW(process, 0, pathBuffer, &pathLength)) {
@@ -507,37 +597,44 @@ static QVector<ProcessUsage> readTopProcesses(int limit = 0) {
     return results;
 }
 
-static bool purgeMemoryList(ULONG command) {
-    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-    if (!ntdll) {
-        return false;
+struct CleanupResult {
+    bool attempted = false;
+    bool succeeded = false;
+    bool measured = false;
+    quint64 beforeBytes = 0;
+    quint64 afterBytes = 0;
+    DWORD error = ERROR_SUCCESS;
+};
+
+static CleanupResult optimizeMemory() {
+    CleanupResult result;
+    PROCESS_MEMORY_COUNTERS before {};
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &before, sizeof(before))) {
+        result.error = GetLastError();
+        return result;
     }
-
-    FARPROC raw = GetProcAddress(ntdll, "NtSetSystemInformation");
-    if (!raw) {
-        return false;
+    result.beforeBytes = before.WorkingSetSize;
+    if (result.beforeBytes < 32ULL * 1024 * 1024) return result;
+    result.attempted = true;
+    result.succeeded = EmptyWorkingSet(GetCurrentProcess()) != FALSE;
+    if (!result.succeeded) {
+        result.error = GetLastError();
+        return result;
     }
-
-    union {
-        FARPROC raw;
-        NtSetSystemInformationProc typed;
-    } proc {};
-    proc.raw = raw;
-
-    LONG status = proc.typed(80, &command, sizeof(command));
-    return status >= 0;
+    PROCESS_MEMORY_COUNTERS after {};
+    result.measured = GetProcessMemoryInfo(GetCurrentProcess(), &after, sizeof(after)) != FALSE;
+    if (result.measured) result.afterBytes = after.WorkingSetSize;
+    else result.error = GetLastError();
+    return result;
 }
 
-static QString optimizeMemory() {
-    bool workingSet = EmptyWorkingSet(GetCurrentProcess());
-    bool allWorkingSets = purgeMemoryList(2);
-    bool standby = purgeMemoryList(4);
+static bool cleanupHadReduction(const CleanupResult &result) {
+    return result.succeeded && result.measured && result.beforeBytes > result.afterBytes
+        && result.beforeBytes - result.afterBytes >= 8ULL * 1024 * 1024;
+}
 
-    if (standby || allWorkingSets || workingSet) {
-        return ko("메모리 정리를 요청했습니다. 관리자 권한이라면 대기 메모리까지 더 잘 정리됩니다.");
-    }
-
-    return ko("정리를 시도했지만 권한이 부족할 수 있습니다. 관리자 권한 실행을 권장합니다.");
+static int cleanupCooldownMinutes(int ineffectiveCount) {
+    return std::min(60, 10 * (1 << std::clamp(ineffectiveCount, 0, 3)));
 }
 
 static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold, int baselineLoad = -1) {
@@ -551,9 +648,10 @@ static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold,
 
     int pressurePenalty = std::clamp((int(newest.load) - 55) * 2, 0, 70);
     int availablePenalty = 0;
-    if (newest.availableMb < 2048) {
+    const quint64 lowMemoryMb = std::min<quint64>(2048, newest.totalMb / 10);
+    if (newest.availableMb < lowMemoryMb) {
         availablePenalty = 18;
-    } else if (newest.availableMb < 4096) {
+    } else if (newest.availableMb < lowMemoryMb * 2) {
         availablePenalty = 8;
     }
 
@@ -579,7 +677,9 @@ static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold,
     qi.commit = commitPenalty;
     qi.baseline = baselinePenalty;
     qi.score = std::clamp(100 - pressurePenalty - availablePenalty - trendPenalty - commitPenalty - baselinePenalty, 0, 100);
-    qi.shouldOptimize = newest.load >= DWORD(threshold) || qi.score <= 45;
+    // A heuristic score is not evidence that reclaiming memory will help.
+    qi.shouldOptimize = samples.size() >= 3 && std::all_of(samples.cend() - 3, samples.cend(),
+        [threshold](const MemorySnapshot &s) { return s.valid && s.load >= DWORD(threshold); });
     return qi;
 }
 
@@ -685,7 +785,9 @@ public:
         threshold->setEnabled(false);
 
         action = new QComboBox();
-        action->addItems({ko("자동 정리"), ko("알림만 표시")});
+        action->addItems({ko("자체 메모리 정리"), ko("알림만 표시")});
+        action->setCurrentIndex(1);
+        action->setToolTip(ko("기본값은 알림입니다. 자체 정리는 Memory Guardian만 대상으로 하며 다른 앱의 누수를 해결하지 않습니다."));
 
         usageMode = new QComboBox();
         usageMode->addItems({ko("일반 PC"), ko("게이밍"), ko("서버"), ko("개발자")});
@@ -737,7 +839,7 @@ public:
         todayPeak = new QLabel(ko("오늘 최고: -"));
         busyHour = new QLabel(ko("가장 무거운 시간: -"));
         leakStatus = new QLabel(ko("누수 의심: 확인 중"));
-        optimizeCountLabel = new QLabel(ko("자동 정리: 0회"));
+        optimizeCountLabel = new QLabel(ko("자체 정리 시도: 0회"));
         for (QLabel *label : {todayAverage, todayPeak, busyHour, leakStatus, optimizeCountLabel}) {
             label->setWordWrap(true);
             label->setMinimumHeight(24);
@@ -1052,6 +1154,7 @@ private:
     QVector<ProcessUsage> latestProcesses;
     QHash<QString, ProcessTrend> processTrends;
     QHash<QString, QVector<ProcessHistoryPoint>> processHistory;
+    QSet<QString> activeLeakWarnings;
     QHash<QString, QIcon> processIconCache;
     HourStats hours[24];
     QDate reportDate;
@@ -1060,6 +1163,10 @@ private:
     qint64 lastTrendCsvMs = 0;
     qint64 lastSecurityScanMs = 0;
     qint64 lastProcessScanMs = 0;
+    std::future<QVector<ProcessUsage>> processScan;
+    std::future<QString> portScan;
+    bool portScanValid = false;
+    bool measurementFailed = false;
     qint64 lastProcessUiRefreshMs = 0;
     qint64 lastTrendUiRefreshMs = 0;
     qint64 optimizeSuppressedUntilMs = 0;
@@ -1070,8 +1177,6 @@ private:
     quint64 totalLoadSum = 0;
     quint64 totalUsedSum = 0;
     int totalSampleCount = 0;
-    int lastOptimizeLoad = -1;
-    int optimizeCheckSamples = 0;
     int ineffectiveOptimizeCount = 0;
     DWORD peakLoad = 0;
     int lastLoggedQiScore = -1;
@@ -1079,7 +1184,6 @@ private:
     bool trayNoticeShown = false;
     bool startedInBackground = false;
     bool startupUpdateChecked = false;
-    bool optimizeEffectPending = false;
     bool cachedPublicPort = false;
     bool cachedPublicRdp = false;
     bool previousCrashPromptShown = false;
@@ -1223,7 +1327,7 @@ private:
     }
 
     QString todayProcessCsvPath() const {
-        return reportDir() + "/" + reportDate.toString("yyyy-MM-dd") + "-processes.csv";
+        return reportDir() + "/" + reportDate.toString("yyyy-MM-dd") + "-processes-v2.csv";
     }
 
     QString longTermTrendPath() const {
@@ -1584,6 +1688,17 @@ private:
         }
 
         MemorySnapshot snapshot = readMemory();
+        if (!snapshot.valid) {
+            if (!measurementFailed) appendLog(ko("메모리 측정 실패: 자동 처리와 학습을 보류합니다. 표시된 수치는 마지막 성공 값입니다."));
+            measurementFailed = true;
+            statusPill->setText(ko("측정 확인 필요"));
+            return; // Never feed failed measurements into learning or automatic actions.
+        }
+        if (measurementFailed) {
+            samples.clear();
+            appendLog(ko("메모리 측정이 복구되었습니다. 새 표본으로 자동 처리 여부를 판단합니다."));
+            measurementFailed = false;
+        }
         samples.push_back(snapshot);
         while (samples.size() > 30) {
             samples.pop_front();
@@ -1598,9 +1713,12 @@ private:
 
         QiState qi = evaluateQi(samples, activeThreshold, totalSampleCount > 0 ? averageLoadToday() : -1);
         qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (latestProcesses.isEmpty() || lastProcessScanMs == 0 || now - lastProcessScanMs >= 10000) {
-            latestProcesses = readTopProcesses();
+        if (processScan.valid() && processScan.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            latestProcesses = processScan.get();
             updateProcessTrends(latestProcesses, snapshot.time);
+        }
+        if (!processScan.valid() && (lastProcessScanMs == 0 || now - lastProcessScanMs >= 15000)) {
+            processScan = std::async(std::launch::async, [] { return readTopProcesses(); });
             lastProcessScanMs = now;
         }
         updateUi(snapshot, qi, activeThreshold);
@@ -1622,12 +1740,9 @@ private:
             updateServerHealthCards(snapshot, latestProcesses);
         }
 
-        checkOptimizeEffect(snapshot, now);
-
         if (qi.shouldOptimize
             && now >= optimizeSuppressedUntilMs
-            && now - lastOptimizeMs > 60000
-            && !optimizeEffectPending) {
+            && now - lastOptimizeMs > 60000) {
             QString gameProcess = gamingModeActive() ? detectedGameProcess() : QString();
             if (!gameProcess.isEmpty()) {
                 lastOptimizeMs = now;
@@ -1636,15 +1751,27 @@ private:
                 return;
             }
             lastOptimizeMs = now;
-            lastOptimizeLoad = int(snapshot.load);
-            optimizeCheckSamples = 0;
-            optimizeEffectPending = true;
-            optimizeCount++;
-            appendLog(ko("최적화 점수가 낮거나 RAM 사용률이 기준을 넘어 자동 처리를 시작합니다."));
-            appendTrendEvent(ko("자동 정리"), "cleanup");
+            appendLog(ko("RAM 사용률이 연속 측정에서 기준을 초과했습니다."));
             if (action->currentIndex() == 0) {
-                appendLog(optimizeMemory());
+                const CleanupResult result = optimizeMemory();
+                if (result.attempted) ++optimizeCount;
+                ineffectiveOptimizeCount = cleanupHadReduction(result) ? 0 : std::min(3, ineffectiveOptimizeCount + 1);
+                const int cooldown = cleanupCooldownMinutes(ineffectiveOptimizeCount);
+                optimizeSuppressedUntilMs = now + qint64(cooldown) * 60 * 1000;
+                if (result.error != ERROR_SUCCESS) {
+                    appendLog(ko("자체 정리 %1: Windows 오류 %2. 다음 시도는 최소 %3분 후입니다.")
+                        .arg(result.succeeded ? ko("후 측정 실패") : ko("실패"))
+                        .arg(result.error).arg(cooldown));
+                    appendTrendEvent(ko("자체 정리 실패 또는 측정 불가"), "warning");
+                } else if (!result.attempted) {
+                    appendLog(ko("자체 작업 집합이 32 MB 미만이라 정리를 생략합니다. %1분간 재시도하지 않습니다.").arg(cooldown));
+                } else {
+                    appendLog(ko("자체 작업 집합 정리: %1 → %2 MB (직후 관측). %3분간 재시도하지 않습니다. 누수 해결이나 영구 회수가 아니며 다시 증가할 수 있습니다.")
+                        .arg(result.beforeBytes / (1024 * 1024)).arg(result.afterBytes / (1024 * 1024)).arg(cooldown));
+                    appendTrendEvent(ko("자체 작업 집합 정리 완료"), "cleanup");
+                }
             } else {
+                optimizeSuppressedUntilMs = now + 10 * 60 * 1000;
                 QApplication::beep();
                 appendLog(ko("알림만 표시했습니다."));
             }
@@ -1675,34 +1802,6 @@ private:
         lastLoggedQiScore = qi.score;
     }
 
-    void checkOptimizeEffect(const MemorySnapshot &snapshot, qint64 now) {
-        if (!optimizeEffectPending) {
-            return;
-        }
-
-        optimizeCheckSamples++;
-        if (optimizeCheckSamples < 3) {
-            return;
-        }
-
-        optimizeEffectPending = false;
-        int currentLoad = int(snapshot.load);
-        if (lastOptimizeLoad >= 0 && currentLoad >= lastOptimizeLoad - 1) {
-            ineffectiveOptimizeCount++;
-            optimizeSuppressedUntilMs = now + 10 * 60 * 1000;
-            QString growth = biggestGrowthText();
-            appendLog(growth.isEmpty()
-                          ? ko("정리 후에도 RAM 사용률이 거의 내려가지 않았습니다. 반복 정리를 10분간 멈추고 누수 추세를 감시합니다.")
-                          : ko("정리 후에도 RAM 사용률이 거의 내려가지 않았습니다. 반복 정리를 10분간 멈추고 %1 증가를 감시합니다.").arg(growth));
-            return;
-        }
-
-        ineffectiveOptimizeCount = 0;
-        appendLog(ko("메모리 정리 효과 확인: RAM 사용률이 %1%에서 %2%로 낮아졌습니다.")
-                  .arg(lastOptimizeLoad)
-                  .arg(currentLoad));
-    }
-
     void resetDailyStats() {
         reportDate = QDate::currentDate();
         std::fill(std::begin(hours), std::end(hours), HourStats {});
@@ -1712,13 +1811,7 @@ private:
         totalSampleCount = 0;
         peakLoad = 0;
         samples.clear();
-        processTrends.clear();
         lastProcessCsvMs = 0;
-        optimizeSuppressedUntilMs = 0;
-        optimizeEffectPending = false;
-        lastOptimizeLoad = -1;
-        optimizeCheckSamples = 0;
-        ineffectiveOptimizeCount = 0;
         appendLog(ko("새 날짜가 시작되어 오늘의 기록을 새로 시작합니다."));
     }
 
@@ -1756,12 +1849,15 @@ private:
         return summary;
     }
 
-    QString commandOutput(const QString &program, const QStringList &arguments, int timeoutMs = 1500) const {
+    static QString commandOutput(const QString &program, const QStringList &arguments, int timeoutMs = 1500) {
         QProcess process;
         process.start(program, arguments);
         if (!process.waitForFinished(timeoutMs)) {
             process.kill();
             process.waitForFinished(300);
+            return QString();
+        }
+        if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
             return QString();
         }
         return QString::fromLocal8Bit(process.readAllStandardOutput());
@@ -2065,16 +2161,24 @@ private:
                               ? ko("임시 학습 완료")
                               : ko("임시 학습: %1%").arg(std::min(99, totalSampleCount * 100 / 1800)));
         leakStatus->setText(leakStatusText(snapshot));
-        optimizeCountLabel->setText(ko("자동 정리: %1회").arg(optimizeCount));
+        optimizeCountLabel->setText(ko("자체 정리 시도: %1회").arg(optimizeCount));
     }
 
     void updateProcessTrends(const QVector<ProcessUsage> &processes, const QDateTime &now) {
         for (const ProcessUsage &process : processes) {
             QString key = QString("%1:%2").arg(process.name).arg(process.pid);
+            if (processTrends.contains(key) && (processTrends[key].creationId != process.creationId
+                || processTrends[key].lastSeen.secsTo(now) > 120
+                || processTrends[key].lastSeen > now)) {
+                processTrends.remove(key);
+                processHistory.remove(key);
+                activeLeakWarnings.remove(key);
+            }
             if (!processTrends.contains(key)) {
                 ProcessTrend trend;
                 trend.name = process.name;
                 trend.pid = process.pid;
+                trend.creationId = process.creationId;
                 trend.firstMb = process.usedMb;
                 trend.firstSeen = now;
                 processTrends.insert(key, trend);
@@ -2082,16 +2186,21 @@ private:
 
             ProcessTrend &trend = processTrends[key];
             trend.lastMb = process.usedMb;
+            trend.privateMb = process.privateMb;
             trend.lastSeen = now;
 
             QVector<ProcessHistoryPoint> &history = processHistory[key];
-            if (history.isEmpty() || history.last().time.secsTo(now) >= 30) {
-                history.push_back({now, process.usedMb});
+            if (process.creationId != 0) recordProcessSample(history, {now, process.usedMb, process.privateMb});
+            const auto evidence = analyzeLeak(history, usageMode && usageMode->currentIndex() == DeveloperMode);
+            if (evidence.label == ko("누수 의심")) {
+                if (!activeLeakWarnings.contains(key)) {
+                    activeLeakWarnings.insert(key);
+                    appendLog(ko("누수 의심: %1 (PID %2). %3 자동 종료하지 않습니다.")
+                        .arg(process.name).arg(process.pid).arg(evidence.reason));
+                    appendTrendEvent(ko("누수 의심: %1").arg(process.name), "warning");
+                }
             } else {
-                history.last() = {now, process.usedMb};
-            }
-            while (!history.isEmpty() && history.first().time.secsTo(now) > 24 * 60 * 60) {
-                history.removeFirst();
+                if (activeLeakWarnings.remove(key)) appendLog(ko("%1: 현재 누수 의심 조건에서 벗어났습니다. 해결을 확정한 것은 아닙니다.").arg(process.name));
             }
         }
 
@@ -2100,6 +2209,7 @@ private:
             if (processTrends[key].lastSeen.secsTo(now) > 900) {
                 processTrends.remove(key);
                 processHistory.remove(key);
+                activeLeakWarnings.remove(key);
             }
         }
     }
@@ -2213,30 +2323,10 @@ private:
     }
 
     QString processPatternLabel(const ProcessTrend &trend) const {
-        qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
-        double speed = processGrowthPerHour(trend);
-        qint64 observedMinutes = std::max<qint64>(1, trend.firstSeen.secsTo(trend.lastSeen) / 60);
-        bool speedReady = std::isfinite(speed);
-
-        bool developerMode = usageMode && usageMode->currentIndex() == DeveloperMode;
-        int warningDelta = developerMode ? 600 : 300;
-        int leakDelta = developerMode ? 1536 : 1024;
-        double warningSpeed = developerMode ? 220.0 : 120.0;
-        double leakSpeed = developerMode ? 450.0 : 300.0;
-
-        if (delta >= leakDelta || (observedMinutes >= 30 && speedReady && speed >= leakSpeed)) {
-            return ko("누수 의심");
-        }
-        if (delta >= warningDelta || (observedMinutes >= 20 && speedReady && speed >= warningSpeed)) {
-            return ko("주의");
-        }
-        if (delta < 0) {
-            return ko("감소 중");
-        }
-        if (observedMinutes < 10) {
-            return ko("관찰 중");
-        }
-        return ko("정상 패턴");
+        if (trend.creationId == 0) return ko("시작 시각 확인 불가");
+        if (trend.lastSeen.secsTo(QDateTime::currentDateTime()) > 120) return ko("최근 측정 없음");
+        const QString key = QString("%1:%2").arg(trend.name).arg(trend.pid);
+        return analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode).label;
     }
 
     const ProcessTrend *mostImportantProcessTrend() const {
@@ -2244,10 +2334,12 @@ private:
         double bestScore = -1.0;
         for (auto it = processTrends.constBegin(); it != processTrends.constEnd(); ++it) {
             const ProcessTrend &trend = it.value();
+            if (trend.lastSeen.secsTo(QDateTime::currentDateTime()) > 120) continue;
             qint64 delta = qint64(trend.lastMb) - qint64(trend.firstMb);
             double speed = processGrowthPerHour(trend);
             double speedScore = std::isfinite(speed) ? std::max(0.0, speed) : 0.0;
             double score = double(std::max<qint64>(0, delta)) + speedScore * 0.4 + double(trend.lastMb) * 0.05;
+            if (processPatternLabel(trend) == ko("누수 의심")) score += 1e12;
             if (score > bestScore) {
                 bestScore = score;
                 best = &it.value();
@@ -2258,12 +2350,12 @@ private:
 
     QString biggestGrowthText() const {
         const ProcessTrend *best = mostImportantProcessTrend();
-        qint64 bestDelta = best ? qint64(best->lastMb) - qint64(best->firstMb) : 0;
-
-        if (!best || bestDelta < 300) {
+        if (!best || processPatternLabel(*best) != ko("누수 의심")) {
             return QString();
         }
-        return ko("%1 +%2 MB").arg(best->name, QString::number(bestDelta));
+        const auto evidence = analyzeLeak(processHistory.value(QString("%1:%2").arg(best->name).arg(best->pid)),
+            usageMode && usageMode->currentIndex() == DeveloperMode);
+        return ko("%1 전용 커밋 +%2 MB (누수 의심, 미확정)").arg(best->name).arg(evidence.deltaMb);
     }
 
     QString leakStatusText(const MemorySnapshot &snapshot) const {
@@ -2288,7 +2380,7 @@ private:
             return ko("진단 상태: 학습 중");
         }
 
-        return ko("진단 상태: 이상 없음");
+        return ko("진단 상태: 현재 관측에서 뚜렷한 이상 미감지 (누수 없음 보장은 아님)");
     }
 
     void updateTopProcesses(const QVector<ProcessUsage> &processes) {
@@ -2438,6 +2530,9 @@ private:
                                    .arg(signedMb(dayDelta))
                                    .arg(speedText)
                                    .arg(pattern));
+        const auto evidence = analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode);
+        processDetail->setText(processDetail->text() + ko("\n전용 커밋(Private Bytes): %1 MB\n%2\n작업 집합 증가와 전용 커밋 증가는 서로 다른 지표입니다.")
+            .arg(trend->privateMb).arg(evidence.reason));
     }
 
     void updateServerHealthCards(const MemorySnapshot &snapshot, const QVector<ProcessUsage> &processes) {
@@ -2450,18 +2545,31 @@ private:
                                   .arg(server.node)
                                   .arg(server.python)
                                   .arg(server.java)
-                                  .arg(server.tailscale ? ko("정상") : ko("없음"))
-                                  .arg(server.cloudflare ? ko("정상") : ko("없음")));
+                                  .arg(server.tailscale ? ko("프로세스 감지") : ko("미감지"))
+                                  .arg(server.cloudflare ? ko("프로세스 감지") : ko("미감지")));
 
         qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (now - lastSecurityScanMs > 60000) {
-            cachedPublicPort = hasPublicListenPort();
-            cachedPublicRdp = hasPublicRdp();
+        if (portScan.valid() && portScan.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            const QString output = portScan.get();
+            portScanValid = !output.trimmed().isEmpty();
+            cachedPublicPort = false;
+            cachedPublicRdp = false;
+            for (const QString &raw : output.split('\n')) {
+                const QStringList fields = raw.simplified().split(' ');
+                if (fields.size() < 4 || fields[0] != "TCP" || fields[3] != "LISTENING") continue;
+                const QString address = fields[1];
+                const bool wildcard = address.startsWith("0.0.0.0:") || address.startsWith("[::]:");
+                cachedPublicPort |= wildcard;
+                cachedPublicRdp |= wildcard && address.endsWith(":3389");
+            }
+        }
+        if (!portScan.valid() && (lastSecurityScanMs == 0 || now - lastSecurityScanMs > 60000)) {
+            portScan = std::async(std::launch::async, [] { return commandOutput("netstat", {"-ano", "-p", "tcp"}); });
             lastSecurityScanMs = now;
         }
-        QString portText = cachedPublicPort ? ko("열린 포트 있음") : ko("없음");
-        QString rdpText = cachedPublicRdp ? ko("주의 필요") : ko("없음");
-        securityStatus->setText(ko("<b>원격 접속 점검</b><br>안전한 원격망: %1<br>외부 노출 의심 포트: %2<br>RDP 원격 데스크톱: %3")
+        QString portText = !portScanValid ? ko("확인 불가 / 검사 중") : cachedPublicPort ? ko("감지됨") : ko("미감지");
+        QString rdpText = !portScanValid ? ko("확인 불가 / 검사 중") : cachedPublicRdp ? ko("감지됨") : ko("미감지");
+        securityStatus->setText(ko("<b>로컬 수신 포트 점검</b><br>Tailscale 프로세스: %1<br>전체 인터페이스 수신: %2<br>3389 수신: %3<br>인터넷 공개 여부는 방화벽·공유기 별도 확인 필요")
                                     .arg(server.tailscale ? ko("Tailscale") : ko("확인 필요"))
                                     .arg(portText)
                                     .arg(rdpText));
@@ -2856,12 +2964,13 @@ private:
                                 .arg(qi.commit)
                                 .arg(qi.baseline)
                                 .arg(qi.score));
+        qiScore->setToolTip(qiScore->toolTip() + ko("\n\n규칙 기반 참고 점수입니다. AI 진단이나 누수 확률이 아니며, 점수만으로 자동 정리하지 않습니다."));
     }
 
     QString diagnosticSummaryText(const MemorySnapshot &snapshot) const {
         QString growth = biggestGrowthText();
         qint64 nonPaged7d = longTermNonPagedDelta(24 * 7);
-        QString ramLeak = growth.isEmpty() ? ko("없음") : growth;
+        QString ramLeak = growth.isEmpty() ? ko("뚜렷한 증가 미감지 (누수 여부 미확정)") : growth;
         QString kernelLeak;
         if (snapshot.nonPagedPoolMb >= 1024 && nonPaged7d > 128) {
             kernelLeak = ko("관찰 필요 (%1 MB, 7일 %2)").arg(snapshot.nonPagedPoolMb).arg(signedMb(nonPaged7d));
@@ -3350,27 +3459,28 @@ private:
 
         QTextStream out(&file);
         if (fresh) {
-            out << "time,process_name,pid,ram_mb,delta_today_mb,growth_mb_per_hour,pattern\n";
+            out << "time,process_name,pid,ram_mb,delta_observed_mb,growth_mb_per_hour,pattern,private_mb,creation_id,private_delta_mb,private_growth_mb_per_hour,evidence\n";
         }
 
         int written = 0;
         for (const ProcessUsage &process : processes) {
-            if (written >= 20) {
-                break;
-            }
             QString safeName = process.name;
             safeName.replace('"', "\"\"");
             QString key = QString("%1:%2").arg(process.name).arg(process.pid);
             double speed = processTrends.contains(key) ? processGrowthPerHour(processTrends[key]) : 0.0;
             QString speedValue = std::isfinite(speed) ? QString::number(speed, 'f', 1) : "";
             QString pattern = processTrends.contains(key) ? processPatternLabel(processTrends[key]) : ko("관찰 중");
+            const auto evidence = analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode);
+            QString reason = evidence.reason;
+            reason.replace('"', "\"\"");
             out << time.toString(Qt::ISODate) << ','
                 << '"' << safeName << '"' << ','
                 << process.pid << ','
                 << process.usedMb << ','
                 << processDeltaMb(process) << ','
                 << speedValue << ','
-                << '"' << pattern << '"' << '\n';
+                << '"' << pattern << "\"," << process.privateMb << ',' << process.creationId << ','
+                << evidence.deltaMb << ',' << evidence.rateMbHour << ",\"" << reason << '"' << '\n';
             written++;
         }
     }

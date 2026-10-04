@@ -1,160 +1,64 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.17"
-$displayVersion = $version.TrimStart("v")
-$projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$installer = Join-Path $projectDir "MemoryGuardianSetup.exe"
-$checksumFile = Join-Path $projectDir "SHA256SUMS.txt"
-$updateFile = Join-Path $projectDir "update.json"
-
-Set-Location $projectDir
-
-if (!(Test-Path $installer)) {
-    throw "MemoryGuardianSetup.exe was not found. Run build-inno-installer.bat first."
+$version = "v1.3.18"
+Set-Location -LiteralPath $PSScriptRoot
+function Invoke-Checked {
+    param([string]$Program, [string[]]$Arguments)
+    $result = & $Program @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "$Program failed ($LASTEXITCODE). Publishing stopped." }
+    return $result
 }
-
-$hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToUpperInvariant()
-"$hash  MemoryGuardianSetup.exe" | Set-Content -Path $checksumFile -Encoding UTF8
-
+$installer = Join-Path $PSScriptRoot "MemoryGuardianSetup.exe"
+if ([version](Get-Item -LiteralPath $installer).VersionInfo.FileVersion -ne [version]"1.3.18.0") {
+    throw "Build the 1.3.18 Inno installer first."
+}
+$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToUpperInvariant()
+Invoke-Checked gh @("api", "user", "--jq", ".login") | Out-Host
+if ((Invoke-Checked git @("branch", "--show-current")).Trim() -ne "main") { throw "Publish from main." }
+if (Invoke-Checked git @("status", "--porcelain")) { throw "Commit reviewed changes first." }
+Invoke-Checked git @("-c", "http.sslBackend=openssl", "fetch", "origin", "main") | Out-Host
+Invoke-Checked git @("merge-base", "--is-ancestor", "origin/main", "HEAD") | Out-Host
+Invoke-Checked git @("-c", "http.sslBackend=openssl", "push", "origin", "main") | Out-Host
+$commit = (Invoke-Checked git @("rev-parse", "HEAD")).Trim()
+$releases = (Invoke-Checked gh @("release", "list", "--repo", $repo, "--limit", "100", "--json", "tagName,isDraft")) | ConvertFrom-Json
+$existing = $releases | Where-Object { $_.tagName -eq $version } | Select-Object -First 1
+$verifyDir = Join-Path $PSScriptRoot ("build/release-verify-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $verifyDir | Out-Null
+$checksum = Join-Path $verifyDir "SHA256SUMS.txt"
+"$hash  MemoryGuardianSetup.exe" | Set-Content -LiteralPath $checksum -Encoding ASCII
+if (!$existing) {
+    Invoke-Checked gh @("release", "create", $version, $installer, $checksum, "--repo", $repo,
+        "--target", $commit, "--draft", "--title", "Memory Guardian 1.3.18",
+        "--notes-file", "docs/RELEASE_NOTES_1.3.18.md") | Out-Host
+}
+$downloadDir = Join-Path $verifyDir "download"
+New-Item -ItemType Directory -Path $downloadDir | Out-Null
+Invoke-Checked gh @("release", "download", $version, "--repo", $repo, "--dir", $downloadDir,
+    "--pattern", "MemoryGuardianSetup.exe", "--pattern", "SHA256SUMS.txt") | Out-Host
+$remoteHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $downloadDir "MemoryGuardianSetup.exe")).Hash
+$remoteChecksum = (Get-Content -LiteralPath (Join-Path $downloadDir "SHA256SUMS.txt") -Raw).Trim()
+if ($remoteHash -ne $hash -or $remoteChecksum -ne "$hash  MemoryGuardianSetup.exe") {
+    throw "Remote assets mismatch. No assets replaced and update metadata not published."
+}
+if (!$existing -or $existing.isDraft) {
+    Invoke-Checked gh @("release", "edit", $version, "--repo", $repo, "--draft=false", "--latest") | Out-Host
+}
+$release = (Invoke-Checked gh @("release", "view", $version, "--repo", $repo, "--json", "isDraft,url")) | ConvertFrom-Json
+if ($release.isDraft) { throw "Release still draft. Update metadata not published." }
+# Publish version-pinned metadata only after the uploaded assets have been verified.
 $manifest = [ordered]@{
-    version = $displayVersion
-    downloadUrl = "https://github.com/$repo/releases/latest/download/MemoryGuardianSetup.exe"
+    version = "1.3.18"
+    downloadUrl = "https://github.com/$repo/releases/download/$version/MemoryGuardianSetup.exe"
     sha256 = $hash
-    checksumUrl = "https://github.com/$repo/releases/latest/download/SHA256SUMS.txt"
-    notes = "Moves project documents into docs and keeps installer cleanup focused on app documentation/runtime files."
+    checksumUrl = "https://github.com/$repo/releases/download/$version/SHA256SUMS.txt"
+    notes = "Private-commit leak analysis, responsive monitoring, accurate metrics, and conservative self-cleanup."
 }
-$manifest | ConvertTo-Json -Depth 3 | Set-Content -Path $updateFile -Encoding UTF8
-
-Write-Host ""
-Write-Host "Memory Guardian GitHub publish start" -ForegroundColor Cyan
-Write-Host "Repo: $repo"
-Write-Host "Version: $version"
-Write-Host "SHA-256: $hash"
-Write-Host ""
-
-git status --short --branch
-git add -u
-git add update.json SHA256SUMS.txt README.md docs installer/install.ps1
-git diff --cached --quiet
-if ($LASTEXITCODE -ne 0) {
-    git commit -m "Update release metadata for $version"
-}
-git push origin main
-
-$notes = @"
-## Memory Guardian 1.3.17
-
-- Move README, license, user agreement, and error reporting notices into the docs folder
-- Keep a small root README that points to the full documentation
-- Package the docs folder with the app while preserving legacy root document copies for compatibility
-- Keep installer cleanup focused on app documentation/runtime files so reports and user settings remain untouched
-- Make the legacy PowerShell uninstaller avoid deleting learned reports and local history data
-- Add daily memory health analysis comparing current RAM use against recent baseline history
-- Add natural-language dashboard summary for whether today's memory state is unusual
-- Add automatic cause summary from the top RAM-growing processes
-- Add memory pressure prediction for when the current trend may reach the cleanup threshold or 90% RAM
-- Add process detail stats for average, lowest, and peak RAM while observed
-- Reduce Process page lag by rendering only the top 80 processes by default
-- Show up to 200 rows while searching instead of rebuilding every process row
-- Avoid expensive Windows executable icon extraction during process table refresh
-- Keep full process monitoring and leak tracking active in the background
-- Add learning confidence for adaptive threshold trust
-- Add detailed score deductions for RAM pressure, free memory, trend, commit pressure, and baseline anomaly
-- Add baseline anomaly scoring when RAM usage is much higher than today's learned average
-- Log large optimization score changes with the primary cause and suspicious process
-- Save score deduction details to the memory CSV history for later reports
-- In Gaming mode, skip automatic cleanup while a likely game process is running and keep monitoring only
-- Add a dashboard memory diagnosis summary for system health, RAM leak status, kernel memory, commit usage, and suspicious processes
-- Add live optimization score tooltips explaining RAM, commit, Non-Paged Pool, mode, threshold, and deduction details
-- Change scary leak wording into clearer observation-focused messages with 7-day Non-Paged Pool trend context
-- Expand operation modes to General PC, Gaming, Server, and Developer
-- Add recent 1-hour and 24-hour process memory delta columns
-- Color activity log messages by normal, warning, and risk severity
-- Add long-term trend event markers for app start and automatic cleanup events
-- Redraw the HAIMEZ shield icon with a larger center mark
-- Improve readability in the Windows taskbar, tray, shortcuts, and installer
-- Regenerate the PNG and multi-size ICO assets
-- Embed the long-term trend graph directly in the Long-Term Trend page
-- Keep RAM protection sampling active while slowing process scans to reduce CPU/UI load
-- Slow process table refreshes to 15 seconds while still collecting process leak data
-- Refresh the inline trend chart only when the page opens or new 5-minute records are expected
-- Split the main window into Dashboard, Process, Long-Term Trend, and Activity Log pages
-- Reduce UI lag by refreshing the heavy process table only while the Process page is open
-- Keep memory collection, leak detection, and 5-minute history recording active in the background
-- Move long-term trend access to a lightweight page that opens the graph only when requested
-- Reduce the default window size for a cleaner windowed layout
-- Add opt-in crash and error report sending to mg.haimez.kr
-- Show the exact included information before the user consents
-- Add local app log storage for recent error context
-- Detect previous abnormal shutdown on the next launch
-- Add ERROR_REPORTING.md for website and distribution notice
-- Use the official HAIMEZ shield for the background system tray icon
-- Add the official black, white, and silver HAIMEZ shield icon
-- Apply the icon to the app window and Windows taskbar
-- Embed the icon in MemoryGuardian.exe and generated shortcuts
-- Apply the same branding to the Inno Setup installer
-- Show every readable running process instead of only the top 20
-- Add instant search by process name or PID
-- Show total and filtered process counts
-- Keep the selected process when the table refreshes
-- Replace the compressed process text list with a scrollable ranked table
-- Show real Windows application icons when the executable path is available
-- Add RAM usage, growth amount, and pattern columns
-- Update the process detail panel when a row is selected
-- Separate Process and Activity Log views into tabs
-- Add a ? button that explains the optimization score deductions
-- Hide process growth speed until at least 10 minutes of observation
-- Show long-term trend tooltips with time, RAM, commit, and change amount
-- Default new installs to General PC mode and hide the server panel outside Server/Developer mode
-- Polish the startup window layout to prevent metric text from overlapping the progress bar
-- Move long leak suspicion text onto a wider summary row
-- Keep auto-update installs restarting Memory Guardian after completion
-- Restart Memory Guardian automatically after silent auto-update installs
-- Keep a Finish-screen launch checkbox for normal installer runs
-- Add commit memory, page file, Non-Paged Pool, and Paged Pool tracking
-- Show top RAM processes with today's growth amount
-- Save per-process RAM records every 10 minutes
-- Add leak suspicion status for process growth and RAM trend
-- Add 1-hour temporary learning before the full daily learned threshold
-- Request administrator permission when the app starts so memory cleanup can work properly
-- Stop repeated cleanup attempts for 10 minutes when RAM does not drop after cleanup
-- Improve daily report card spacing to prevent clipped numbers
-- Keep reports and learned settings during automatic reinstall updates
-- Add process detail view with PID, start memory, current memory, growth amount, and MB per hour
-- Label processes as normal pattern, warning, or leak suspected
-- Save process growth speed and pattern labels to CSV and daily reports
-- Persist auto/manual threshold, cleanup action, operation mode, and theme after restart
-- Make control labels easier to understand
-- Add a long-term trend window with 1-hour, 24-hour, 7-day, and 30-day ranges
-- Read trend graphs from the 5-minute memory history file
-- Keep SHA-256 update verification metadata for corruption/tamper checks
-
-SHA-256:
-$hash
-"@
-
-$previousErrorActionPreference = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-gh release view $version --repo $repo *> $null
-$releaseExists = ($LASTEXITCODE -eq 0)
-$ErrorActionPreference = $previousErrorActionPreference
-
-if ($releaseExists) {
-    Write-Host "Existing release found. Replacing assets." -ForegroundColor Yellow
-    gh release upload $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --clobber
-    gh release edit $version --repo $repo --title "Memory Guardian 1.3.17" --notes $notes --latest
-} else {
-    Write-Host "Creating a new release." -ForegroundColor Green
-    gh release create $version .\MemoryGuardianSetup.exe .\SHA256SUMS.txt --repo $repo --title "Memory Guardian 1.3.17" --notes $notes --latest
-}
-
-Write-Host ""
-Write-Host "Done." -ForegroundColor Green
-Write-Host "https://github.com/haimez-kor/memory-guardian/releases/tag/$version"
-Write-Host ""
-Read-Host "Press Enter to close"
-
-
-
-
-
+$manifest | ConvertTo-Json | Set-Content -LiteralPath "update.json" -Encoding UTF8
+Copy-Item -LiteralPath $checksum -Destination "SHA256SUMS.txt" -Force
+Invoke-Checked git @("add", "--", "update.json", "SHA256SUMS.txt") | Out-Host
+& git diff --cached --quiet
+if ($LASTEXITCODE -eq 1) {
+    Invoke-Checked git @("commit", "-m", "Publish verified update metadata for $version") | Out-Host
+} elseif ($LASTEXITCODE -ne 0) { throw "Cannot inspect staged metadata." }
+Invoke-Checked git @("-c", "http.sslBackend=openssl", "push", "origin", "main") | Out-Host
+Write-Host "Published and verified: $($release.url)"

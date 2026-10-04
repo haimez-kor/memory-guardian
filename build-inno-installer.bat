@@ -6,8 +6,11 @@ set PATH=C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
 call build.bat
 if errorlevel 1 exit /b 1
 
-set DIST=dist-app-v1.3.17
-if exist "%DIST%" rmdir /S /Q "%DIST%"
+set DIST=dist-app-v1.3.18
+if exist "%DIST%" (
+  echo Distribution directory already exists. Review it before rebuilding.
+  exit /b 3
+)
 mkdir "%DIST%"
 
 copy /Y build\MemoryGuardian.exe "%DIST%\" >nul

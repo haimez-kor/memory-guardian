@@ -21,3 +21,10 @@ target_link_libraries(MemoryGuardian PRIVATE
     psapi
     shell32
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(GuardianDiagnosticsTests tests/diagnostics.cpp)
+    target_link_libraries(GuardianDiagnosticsTests PRIVATE Qt6::Widgets Qt6::Network psapi shell32)
+    add_test(NAME diagnostics COMMAND GuardianDiagnosticsTests)
+endif()

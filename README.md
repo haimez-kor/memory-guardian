@@ -6,6 +6,8 @@ Memory Guardian은 Windows 메모리 사용 패턴을 학습하고 RAM, 커밋 �
 
 ## 문서
 
+- 현재 진단·정리 동작과 한계: [docs/DIAGNOSTIC_LIMITS.md](docs/DIAGNOSTIC_LIMITS.md)
+
 - 한국어 설명서: [docs/README.md](docs/README.md)
 - English README: [docs/README.en.md](docs/README.en.md)
 - 라이선스: [docs/LICENSE](docs/LICENSE)
