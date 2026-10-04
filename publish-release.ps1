@@ -9,8 +9,12 @@ function Invoke-Checked {
     return $result
 }
 $installer = Join-Path $PSScriptRoot "MemoryGuardianSetup.exe"
-if ([version](Get-Item -LiteralPath $installer).VersionInfo.FileVersion -ne [version]"1.3.18.0") {
-    throw "Build the 1.3.18 Inno installer first."
+$info = (Get-Item -LiteralPath $installer).VersionInfo
+$actualVersion = [version]::new($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart)
+$requestedVersion = [version]$version.TrimStart("v")
+$expectedVersion = [version]::new($requestedVersion.Major, $requestedVersion.Minor, $requestedVersion.Build, [Math]::Max(0, $requestedVersion.Revision))
+if ($actualVersion -ne $expectedVersion) {
+    throw "Installer version mismatch: expected $expectedVersion, found $actualVersion. Build the correct Inno installer first."
 }
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToUpperInvariant()
 Invoke-Checked gh @("api", "user", "--jq", ".login") | Out-Host
