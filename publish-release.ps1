@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $repo = "haimez-kor/memory-guardian"
-$version = "v1.3.18"
+$version = "v1.4.0"
 Set-Location -LiteralPath $PSScriptRoot
 function Invoke-Checked {
     param([string]$Program, [string[]]$Arguments)
@@ -32,8 +32,8 @@ $checksum = Join-Path $verifyDir "SHA256SUMS.txt"
 "$hash  MemoryGuardianSetup.exe" | Set-Content -LiteralPath $checksum -Encoding ASCII
 if (!$existing) {
     Invoke-Checked gh @("release", "create", $version, $installer, $checksum, "--repo", $repo,
-        "--target", $commit, "--draft", "--title", "Memory Guardian 1.3.18",
-        "--notes-file", "docs/RELEASE_NOTES_1.3.18.md") | Out-Host
+        "--target", $commit, "--draft", "--title", "Memory Guardian 1.4.0",
+        "--notes-file", "docs/RELEASE_NOTES_1.4.0.md") | Out-Host
 }
 $downloadDir = Join-Path $verifyDir "download"
 New-Item -ItemType Directory -Path $downloadDir | Out-Null
@@ -51,11 +51,11 @@ $release = (Invoke-Checked gh @("release", "view", $version, "--repo", $repo, "-
 if ($release.isDraft) { throw "Release still draft. Update metadata not published." }
 # Publish version-pinned metadata only after the uploaded assets have been verified.
 $manifest = [ordered]@{
-    version = "1.3.18"
+    version = "1.4.0"
     downloadUrl = "https://github.com/$repo/releases/download/$version/MemoryGuardianSetup.exe"
     sha256 = $hash
     checksumUrl = "https://github.com/$repo/releases/download/$version/SHA256SUMS.txt"
-    notes = "Private-commit leak analysis, responsive monitoring, accurate metrics, and conservative self-cleanup."
+    notes = "New dark/light UI, searchable historical events, date-range charts, improved game detection, and conservative Java/browser growth analysis."
 }
 $manifest | ConvertTo-Json | Set-Content -LiteralPath "update.json" -Encoding UTF8
 Copy-Item -LiteralPath $checksum -Destination "SHA256SUMS.txt" -Force

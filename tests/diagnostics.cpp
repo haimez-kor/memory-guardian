@@ -3,7 +3,8 @@
 #undef main
 #include <iostream>
 
-int main() {
+int main(int argc, char **argv) {
+    QApplication app(argc, argv);
     int failures = 0;
     auto check = [&](bool passed, const char *name) {
         std::cout << (passed ? "PASS " : "FAIL ") << name << '\n';
@@ -76,5 +77,69 @@ int main() {
     check(cleanupCooldownMinutes(0) == 10 && cleanupCooldownMinutes(1) == 20
         && cleanupCooldownMinutes(2) == 40 && cleanupCooldownMinutes(3) == 60
         && cleanupCooldownMinutes(100) == 60, "cleanup backoff is bounded");
+    check(!isKnownGameExecutable("steamwebhelper.exe") && !isKnownGameExecutable("steam.exe"), "launchers are not games");
+    check(!isKnownGameExecutable("javaw.exe") && isKnownGameExecutable("Raft.exe"), "Java is not automatically a game");
+    check(!inHistoryWindow(start.addSecs(1), start, 24) && inHistoryWindow(start.addSecs(-3600), start, 1), "history has inclusive past boundary and no future rows");
+    QVector<ProcessHistoryPoint> javaGrowth;
+    for (int i = 0; i <= 120; ++i) javaGrowth.push_back({start.addSecs(i * 30), 100, quint64(100 + i * 10)});
+    check(analyzeLeak(javaGrowth, false, "javaw.exe").label == ko("지속 증가 관찰"), "Java defers diagnosis without GC data");
+    check(analyzeLeak(javaGrowth, false, "chrome.exe").label == ko("지속 증가 관찰"), "browser growth is not a confirmed leak");
+
+    const QString fixtureDir = QCoreApplication::applicationDirPath() + "/test-reports";
+    QDir().mkpath(fixtureDir);
+    const auto historicalEnd = QDateTime::currentDateTime().addDays(-2);
+    auto writeFixture = [&](const QString &name, const QString &data) {
+        QFile file(fixtureDir + "/" + name);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+        return file.write(data.toUtf8()) >= 0;
+    };
+    QString rows = "time,load,ram,commit,limit,page,total,nonpaged,paged\n";
+    for (int i = 0; i < 20; ++i) rows += historicalEnd.addSecs(-3600 + i * 180).toString(Qt::ISODate)
+        + QString(",60,%1,22000,40000,100,2000,800,900\n").arg(16000 + i * 100);
+    check(writeFixture("long-term-trends.csv", rows), "historical trend fixture saved");
+    check(writeFixture("trend-events.csv", "time,label,type\n" + historicalEnd.addSecs(-900).toString(Qt::ISODate)
+        + ",javaw.exe observation,warning\n"), "historical event fixture saved");
+    GuardianWindow window(false, true);
+    auto *tabs = window.findChild<QTabWidget *>();
+    tabs->setCurrentIndex(2);
+    window.findChild<QDateTimeEdit *>()->setDateTime(historicalEnd);
+    for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == ko("조회")) button->click();
+    auto *model = window.findChild<QStandardItemModel *>();
+    check(model && model->rowCount() == 1, "historical event displayed independently of today's date");
+    auto *proxy = window.findChild<QSortFilterProxyModel *>();
+    proxy->setFilterFixedString("javaw");
+    check(proxy->rowCount() == 1, "event search matches process name");
+    proxy->setFilterFixedString("unmatched");
+    check(proxy->rowCount() == 0, "event search hides unmatched rows");
+    proxy->setFilterFixedString("");
+    for (auto *combo : window.findChildren<QComboBox *>()) {
+        if (combo->findText(ko("라이트 모드")) >= 0) combo->setCurrentIndex(combo->findText(ko("라이트 모드")));
+    }
+    window.show();
+    app.processEvents();
+    check(window.grab().save(QCoreApplication::applicationDirPath() + "/history-light.png"), "history screenshot saved");
+    for (auto *combo : window.findChildren<QComboBox *>()) {
+        if (combo->findText(ko("다크 모드")) >= 0) combo->setCurrentIndex(combo->findText(ko("다크 모드")));
+    }
+    window.resize(940, 640);
+    app.processEvents();
+    check(window.grab().save(QCoreApplication::applicationDirPath() + "/history-compact.png"), "compact history screenshot saved");
+    tabs->setCurrentIndex(0);
+    app.processEvents();
+    check(window.grab().save(QCoreApplication::applicationDirPath() + "/dashboard-compact.png"), "compact dashboard screenshot saved");
+    if (QCoreApplication::arguments().contains("--installed-history")) {
+        const QString source = qEnvironmentVariable("ProgramFiles") + "/Memory Guardian/reports/";
+        for (const QString &name : {QString("long-term-trends.csv"), QString("trend-events.csv")}) {
+            QFile file(source + name);
+            check(file.open(QIODevice::ReadOnly), "installed history readable without modification");
+            check(writeFixture(name, QString::fromUtf8(file.readAll())), "installed history copied to isolated test directory");
+        }
+        tabs->setCurrentIndex(2);
+        for (auto *button : window.findChildren<QPushButton *>()) if (button->text() == ko("현재 기록")) button->click();
+        check(model->rowCount() > 0, "installed events visible in history page");
+        window.resize(1100, 800);
+        app.processEvents();
+        check(window.grab().save(QCoreApplication::applicationDirPath() + "/history-installed.png"), "installed history screenshot saved");
+    }
     return failures == 0 ? 0 : 1;
 }

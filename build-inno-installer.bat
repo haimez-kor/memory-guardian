@@ -6,7 +6,7 @@ set PATH=C:\msys64\mingw64\bin;C:\msys64\usr\bin;%PATH%
 call build.bat
 if errorlevel 1 exit /b 1
 
-set DIST=dist-app-v1.3.18
+set DIST=dist-app-v1.4.0
 if exist "%DIST%" (
   echo Distribution directory already exists. Review it before rebuilding.
   exit /b 3

@@ -10,10 +10,20 @@
 #include <shellapi.h>
 #include <tlhelp32.h>
 
-static const char *APP_VERSION = "1.3.18";
+static const char *APP_VERSION = "1.4.0";
 
 static QString ko(const char *text) {
     return QString::fromUtf8(text);
+}
+
+static bool isKnownGameExecutable(const QString &name) {
+    static const QStringList names = {"overwatch.exe", "valorant.exe", "leagueoflegends.exe",
+        "minecraft.exe", "raft.exe", "palworld-win64-shipping.exe", "fortniteclient-win64-shipping.exe"};
+    return names.contains(name.toLower());
+}
+
+static bool inHistoryWindow(const QDateTime &time, const QDateTime &end, int hours) {
+    return time.isValid() && time >= end.addSecs(-qint64(hours) * 3600) && time <= end;
 }
 
 static bool systemPrefersDarkMode() {
@@ -140,7 +150,7 @@ struct LeakEvidence {
     double rateMbHour = 0;
 };
 
-static LeakEvidence analyzeLeak(const QVector<ProcessHistoryPoint> &history, bool developerMode = false) {
+static LeakEvidence analyzeLeak(const QVector<ProcessHistoryPoint> &history, bool developerMode = false, const QString &processName = {}) {
     LeakEvidence result;
     if (history.size() < 2) return result;
     const auto cutoff = history.last().time.addSecs(-3600);
@@ -187,6 +197,11 @@ static LeakEvidence analyzeLeak(const QVector<ProcessHistoryPoint> &history, boo
     }
     result.reason = ko("관측 %1분 · Private Bytes 변화 %2 MB · %3 MB/h · 5분 구간 %4/%5 증가. 누수 확정이나 확률이 아닙니다.")
         .arg(seconds / 60).arg(result.deltaMb).arg(result.rateMbHour, 0, 'f', 1).arg(growing).arg(intervals);
+    const QString name = processName.toLower();
+    if (name == "java.exe" || name == "javaw.exe" || name == "chrome.exe" || name == "msedge.exe") {
+        if (result.label == ko("누수 의심")) result.label = ko("지속 증가 관찰");
+        result.reason += ko(" GC/힙 및 작업 부하를 수집하지 않아 정상 할당과 누수를 구별할 수 없습니다.");
+    }
     return result;
 }
 
@@ -405,7 +420,8 @@ protected:
         auto drawSeries = [&](auto valueFn, QColor color, quint64 maxValue) {
             QPainterPath path;
             for (int i = 0; i < points.size(); ++i) {
-                double x = double(area.left()) + double(area.width()) * double(i) / double(points.size() - 1);
+                double x = double(area.left()) + double(area.width()) * double(points.first().time.msecsTo(points[i].time))
+                    / double(qMax<qint64>(1, points.first().time.msecsTo(points.last().time)));
                 double ratio = maxValue > 0 ? double(valueFn(points[i])) / double(maxValue) : 0.0;
                 ratio = std::clamp(ratio, 0.0, 1.0);
                 double y = double(area.bottom()) - double(area.height()) * ratio;
@@ -473,8 +489,14 @@ private:
             return -1;
         }
         double ratio = double(point.x() - area.left()) / double(qMax(1, area.width()));
-        int index = int(std::round(std::clamp(ratio, 0.0, 1.0) * double(points.size() - 1)));
-        return std::clamp(index, 0, int(points.size()) - 1);
+        const auto target = points.first().time.addMSecs(qint64(std::clamp(ratio, 0.0, 1.0)
+            * points.first().time.msecsTo(points.last().time)));
+        auto it = std::lower_bound(points.cbegin(), points.cend(), target,
+            [](const LongTermPoint &p, const QDateTime &t) { return p.time < t; });
+        if (it == points.cend()) return int(points.size()) - 1;
+        int index = int(it - points.cbegin());
+        if (index > 0 && points[index - 1].time.msecsTo(target) < target.msecsTo(points[index].time)) --index;
+        return index;
     }
 
     int eventAt(const QPoint &point) const {
@@ -490,7 +512,7 @@ private:
             }
             qint64 offsetSecs = points.first().time.secsTo(event.time);
             int x = area.left() + int(double(area.width()) * double(offsetSecs) / double(totalSecs));
-            QRect hit(x - 8, area.top(), 16, area.height());
+            QRect hit(x - 8, area.top(), 16, 24);
             if (hit.contains(point)) {
                 return i;
             }
@@ -685,12 +707,12 @@ static QiState evaluateQi(const QVector<MemorySnapshot> &samples, int threshold,
 
 class GuardianWindow : public QWidget {
 public:
-    explicit GuardianWindow(bool backgroundStart = false) : startedInBackground(backgroundStart) {
+    explicit GuardianWindow(bool backgroundStart = false, bool preview = false) : startedInBackground(backgroundStart), previewOnly(preview) {
         reportDate = QDate::currentDate();
         loadLearnedProfile();
         setWindowTitle(ko("메모리 자동 보호기"));
         setMinimumSize(940, 640);
-        resize(1000, 720);
+        resize(1100, 800);
 
         auto *root = new QVBoxLayout(this);
         root->setContentsMargins(22, 18, 22, 18);
@@ -813,20 +835,19 @@ public:
         controlLayout->addWidget(action, 2, 1);
         controlLayout->addWidget(usageMode, 2, 2);
         controlLayout->addWidget(themeMode, 2, 3);
-        controlLayout->addWidget(startButton, 2, 4);
-        controlLayout->addWidget(reportButton, 2, 5);
-        controlLayout->addWidget(trendButton, 2, 6);
-        controlLayout->addWidget(updateButton, 2, 7);
-        controlLayout->addWidget(errorReportButton, 2, 8);
+        auto *commandRow = new QHBoxLayout();
+        commandRow->addWidget(startButton);
+        commandRow->addWidget(reportButton);
+        commandRow->addWidget(trendButton);
+        commandRow->addWidget(updateButton);
+        commandRow->addWidget(errorReportButton);
+        commandRow->addStretch();
+        controlLayout->addLayout(commandRow, 3, 0, 1, 4);
         controlLayout->setColumnMinimumWidth(0, 82);
         controlLayout->setColumnMinimumWidth(1, 112);
         controlLayout->setColumnMinimumWidth(2, 120);
         controlLayout->setColumnMinimumWidth(3, 128);
         controlLayout->setColumnStretch(3, 1);
-        controlLayout->setColumnStretch(5, 1);
-        controlLayout->setColumnStretch(6, 1);
-        controlLayout->setColumnStretch(7, 1);
-        controlLayout->setColumnStretch(8, 1);
         dashboardLayout->addWidget(controls);
 
         auto *reportPanel = new QFrame();
@@ -962,17 +983,87 @@ public:
         trendHeader->addWidget(trendTitle, 1);
         trendHeader->addWidget(trendRange);
         trendHeader->addWidget(openTrendFileButton);
+        auto *historyControls = new QHBoxLayout();
+        trendEnd = new QDateTimeEdit(QDateTime::currentDateTime());
+        trendEnd->setCalendarPopup(true);
+        trendEnd->setDisplayFormat("yyyy-MM-dd HH:mm");
+        auto *loadHistory = new QPushButton(ko("조회"));
+        auto *showLatest = new QPushButton(ko("현재 기록"));
+        auto *chooseHistory = new QPushButton(ko("기록 폴더 선택"));
+        chooseHistory->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
+        historyReadDir = reportDir();
+        const QString installedReports = qEnvironmentVariable("ProgramFiles") + "/Memory Guardian/reports";
+        if (!previewOnly && !QFile::exists(historyReadDir + "/long-term-trends.csv") && QFile::exists(installedReports + "/long-term-trends.csv")) historyReadDir = installedReports;
+        historyControls->addWidget(new QLabel(ko("조회 종료 시각")));
+        historyControls->addWidget(trendEnd);
+        historyControls->addWidget(loadHistory);
+        historyControls->addWidget(showLatest);
+        historyControls->addWidget(chooseHistory);
+        historyControls->addStretch();
         trendSummary = new QLabel(ko("5분마다 기록한 RAM, 커밋 메모리, Non-Paged Pool 추세를 표시합니다."));
         trendSummary->setObjectName("metricLabel");
         trendSummary->setWordWrap(true);
         trendChart = new LongTermChartWidget();
         trendChart->setObjectName("inlineTrendChart");
         trendLayout->addLayout(trendHeader);
+        trendLayout->addLayout(historyControls);
         trendLayout->addWidget(trendSummary);
-        trendLayout->addWidget(trendChart, 1);
+        auto *historySplitter = new QSplitter(Qt::Vertical);
+        trendChart->setMinimumHeight(150);
+        historySplitter->addWidget(trendChart);
+        auto *eventPanel = new QWidget();
+        auto *eventLayout = new QVBoxLayout(eventPanel);
+        eventLayout->setContentsMargins(0, 0, 0, 0);
+        eventSearch = new QLineEdit();
+        eventSearch->setPlaceholderText(ko("이벤트 검색: 프로그램 이름, 유형, 시각"));
+        eventCount = new QLabel();
+        eventModel = new QStandardItemModel(this);
+        eventModel->setHorizontalHeaderLabels({ko("시각"), ko("유형"), ko("이벤트 내용")});
+        eventFilter = new QSortFilterProxyModel(this);
+        eventFilter->setSourceModel(eventModel);
+        eventFilter->setFilterKeyColumn(-1);
+        eventFilter->setFilterCaseSensitivity(Qt::CaseInsensitive);
+        auto *eventTable = new QTableView();
+        eventTable->setModel(eventFilter);
+        eventTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        eventTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        eventTable->setSortingEnabled(true);
+        eventTable->sortByColumn(0, Qt::DescendingOrder);
+        eventTable->verticalHeader()->hide();
+        eventTable->horizontalHeader()->setStretchLastSection(true);
+        eventTable->setColumnWidth(0, 175);
+        eventTable->setColumnWidth(1, 90);
+        eventTable->setMinimumHeight(130);
+        eventDetail = new QLabel();
+        eventDetail->setWordWrap(true);
+        eventDetail->setTextFormat(Qt::PlainText);
+        eventDetail->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        eventLayout->addWidget(eventSearch);
+        eventLayout->addWidget(eventCount);
+        eventLayout->addWidget(eventTable, 1);
+        eventLayout->addWidget(eventDetail);
+        historySplitter->addWidget(eventPanel);
+        historySplitter->setSizes({220, 240});
+        trendLayout->addWidget(historySplitter, 1);
+        connect(loadHistory, &QPushButton::clicked, this, [this] { historyPinned = true; refreshInlineTrend(true); });
+        connect(showLatest, &QPushButton::clicked, this, [this] { historyPinned = false; refreshInlineTrend(true); });
+        connect(chooseHistory, &QPushButton::clicked, this, [this] {
+            const QString dir = QFileDialog::getExistingDirectory(this, ko("기록 폴더 선택 (읽기 전용)"), historyReadDir);
+            if (!dir.isEmpty()) { historyReadDir = dir; refreshInlineTrend(true); }
+        });
+        connect(eventSearch, &QLineEdit::textChanged, this, [this](const QString &text) {
+            eventFilter->setFilterFixedString(text);
+            eventCount->setText(ko("이벤트 %1 / %2건").arg(eventFilter->rowCount()).arg(eventModel->rowCount()));
+        });
+        connect(eventTable->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
+            [this](const QModelIndex &index) { eventDetail->setText(eventFilter->index(index.row(), 2).data().toString()); });
         trendPageLayout->addWidget(trendPanel, 1);
 
-        lowerTabs->addTab(dashboardPage, ko("대시보드"));
+        auto *dashboardScroll = new QScrollArea();
+        dashboardScroll->setWidgetResizable(true);
+        dashboardScroll->setFrameShape(QFrame::NoFrame);
+        dashboardScroll->setWidget(dashboardPage);
+        lowerTabs->addTab(dashboardScroll, ko("대시보드"));
         lowerTabs->addTab(processPage, ko("프로세스"));
         lowerTabs->addTab(trendPage, ko("장기 추세"));
         lowerTabs->addTab(log, ko("활동 로그"));
@@ -1014,7 +1105,7 @@ public:
             refreshInlineTrend(true);
         });
         connect(openTrendFileButton, &QPushButton::clicked, this, [this] {
-            QDesktopServices::openUrl(QUrl::fromLocalFile(longTermTrendPath()));
+            QDesktopServices::openUrl(QUrl::fromLocalFile(historyReadDir));
         });
         connect(updateButton, &QPushButton::clicked, this, [this] {
             checkForUpdates(false);
@@ -1047,6 +1138,7 @@ public:
 
         applyStyle();
         updateServerPanelVisibility();
+        if (previewOnly) return;
         setupTray();
         checkPreviousCrash();
         writeRunMarker();
@@ -1145,6 +1237,22 @@ private:
     QTextEdit *log = nullptr;
     QTabWidget *lowerTabs = nullptr;
     QComboBox *trendRange = nullptr;
+    QDateTimeEdit *trendEnd = nullptr;
+    QLineEdit *eventSearch = nullptr;
+    QLabel *eventCount = nullptr;
+    QLabel *eventDetail = nullptr;
+    QStandardItemModel *eventModel = nullptr;
+    QSortFilterProxyModel *eventFilter = nullptr;
+    bool historyPinned = false;
+    QString historyReadDir;
+    bool previewOnly = false;
+    MemorySnapshot cleanupBaseline;
+    quint64 cleanupWorkingSet = 0;
+    QElapsedTimer cleanupObservation;
+    int cleanupObservationStage = 0;
+    double recentScore = -1;
+    QElapsedTimer scoreClock;
+    QString lastDeferredGame;
     QLabel *trendSummary = nullptr;
     LongTermChartWidget *trendChart = nullptr;
     QSystemTrayIcon *trayIcon = nullptr;
@@ -1270,24 +1378,17 @@ private:
     }
 
     QString detectedGameProcess() const {
-        static const QStringList gameNames = {
-            "steam.exe", "epicgameslauncher.exe", "battle.net.exe", "overwatch.exe",
-            "valorant.exe", "leagueoflegends.exe", "minecraft.exe", "javaw.exe",
-            "raft.exe", "palworld-win64-shipping.exe", "fortniteclient-win64-shipping.exe"
-        };
+        DWORD foregroundPid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &foregroundPid);
         for (const ProcessUsage &process : latestProcesses) {
-            QString name = process.name.toLower();
-            for (const QString &game : gameNames) {
-                if (name == game || name.contains(game.section('.', 0, 0))) {
-                    return process.name;
-                }
-            }
+            if (process.pid == foregroundPid && isKnownGameExecutable(process.name)) return process.name;
         }
         return QString();
     }
 
     QWidget *makeMetric(const QString &labelText, QLabel *value, QWidget *sideWidget = nullptr) {
         auto *box = new QWidget();
+        box->setStyleSheet("background: transparent;");
         box->setMinimumHeight(88);
         auto *layout = new QVBoxLayout(box);
         layout->setContentsMargins(0, 0, 0, 0);
@@ -1313,7 +1414,7 @@ private:
     }
 
     QString reportDir() const {
-        QString dir = QCoreApplication::applicationDirPath() + "/reports";
+        QString dir = QCoreApplication::applicationDirPath() + (previewOnly ? "/test-reports" : "/reports");
         QDir().mkpath(dir);
         return dir;
     }
@@ -1712,6 +1813,9 @@ private:
         }
 
         QiState qi = evaluateQi(samples, activeThreshold, totalSampleCount > 0 ? averageLoadToday() : -1);
+        if (recentScore < 0) recentScore = qi.score;
+        else recentScore += (1.0 - std::exp(-double(scoreClock.elapsed()) / 300000.0)) * (qi.score - recentScore);
+        scoreClock.restart();
         qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (processScan.valid() && processScan.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             latestProcesses = processScan.get();
@@ -1740,20 +1844,51 @@ private:
             updateServerHealthCards(snapshot, latestProcesses);
         }
 
+        const QString activeGame = gamingModeActive() ? detectedGameProcess() : QString();
+        if (activeGame != lastDeferredGame) {
+            if (!lastDeferredGame.isEmpty()) appendLog(ko("게임 전면 실행 감지 해제: %1").arg(lastDeferredGame));
+            lastDeferredGame = activeGame;
+            if (!activeGame.isEmpty()) appendLog(ko("게임 전면 실행 감지: %1 · 자체 정리 보류").arg(activeGame));
+        }
+        if (cleanupObservation.isValid()) {
+            const qint64 due = cleanupObservationStage == 0 ? 60000 : 300000;
+            if (cleanupObservation.elapsed() >= due) {
+                PROCESS_MEMORY_COUNTERS counters {};
+                const bool measured = GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters));
+                const QString message = ko("정리 후 %1분 관측: 여유 RAM %2 MB, 시스템 커밋 %3 MB, 자체 작업 집합 변화 %4. 다른 작업 영향 포함, 성능 향상 판정 아님.")
+                    .arg(cleanupObservationStage == 0 ? 1 : 5)
+                    .arg(qint64(snapshot.availableMb) - qint64(cleanupBaseline.availableMb))
+                    .arg(qint64(snapshot.commitMb) - qint64(cleanupBaseline.commitMb))
+                    .arg(measured ? QString::number((qint64(counters.WorkingSetSize) - qint64(cleanupWorkingSet)) / (1024 * 1024)) + " MB" : ko("측정 실패"));
+                appendLog(message);
+                appendTrendEvent(message, "info");
+                if (++cleanupObservationStage == 2) cleanupObservation.invalidate();
+            }
+        }
         if (qi.shouldOptimize
             && now >= optimizeSuppressedUntilMs
             && now - lastOptimizeMs > 60000) {
-            QString gameProcess = gamingModeActive() ? detectedGameProcess() : QString();
+            QString gameProcess = gamingModeActive() && action->currentIndex() == 0 ? detectedGameProcess() : QString();
             if (!gameProcess.isEmpty()) {
                 lastOptimizeMs = now;
-                appendLog(ko("게임 모드: %1 실행 중이라 자동 정리는 건너뛰고 모니터링만 유지합니다.").arg(gameProcess));
-                appendTrendEvent(ko("게임 중 자동 정리 보류"), "warning");
                 return;
             }
             lastOptimizeMs = now;
             appendLog(ko("RAM 사용률이 연속 측정에서 기준을 초과했습니다."));
             if (action->currentIndex() == 0) {
+                QElapsedTimer cleanupDuration;
+                cleanupDuration.start();
                 const CleanupResult result = optimizeMemory();
+                if (result.attempted) {
+                    cleanupBaseline = snapshot;
+                    cleanupWorkingSet = result.beforeBytes;
+                    cleanupObservationStage = 0;
+                    cleanupObservation.start();
+                    const QString details = ko("자체 정리 기준: 여유 RAM %1 MB · 커밋 %2 MB · 작업 집합 %3 MB · API 소요 %4 ms. 게임 FPS·프레임 지연은 측정하지 않습니다.")
+                        .arg(snapshot.availableMb).arg(snapshot.commitMb).arg(result.beforeBytes / (1024 * 1024)).arg(cleanupDuration.elapsed());
+                    appendLog(details);
+                    appendTrendEvent(details, "info");
+                }
                 if (result.attempted) ++optimizeCount;
                 ineffectiveOptimizeCount = cleanupHadReduction(result) ? 0 : std::min(3, ineffectiveOptimizeCount + 1);
                 const int cooldown = cleanupCooldownMinutes(ineffectiveOptimizeCount);
@@ -2110,6 +2245,7 @@ private:
     void updateUi(const MemorySnapshot &snapshot, const QiState &qi, int activeThreshold) {
         ramPercent->setText(QString("%1%").arg(snapshot.load));
         qiScore->setText(ko("%1점").arg(qi.score));
+        qiScore->setToolTip(qiScore->toolTip() + ko("\n최근 평균(5분 시정수): %1점 · 현재 점수와 별개인 평활 참고값").arg(qRound(recentScore < 0 ? qi.score : recentScore)));
         updateQiTooltip(snapshot, qi, activeThreshold);
 
         QString thresholdText = QString("%1%").arg(activeThreshold);
@@ -2191,7 +2327,7 @@ private:
 
             QVector<ProcessHistoryPoint> &history = processHistory[key];
             if (process.creationId != 0) recordProcessSample(history, {now, process.usedMb, process.privateMb});
-            const auto evidence = analyzeLeak(history, usageMode && usageMode->currentIndex() == DeveloperMode);
+            const auto evidence = analyzeLeak(history, usageMode && usageMode->currentIndex() == DeveloperMode, process.name);
             if (evidence.label == ko("누수 의심")) {
                 if (!activeLeakWarnings.contains(key)) {
                     activeLeakWarnings.insert(key);
@@ -2326,7 +2462,7 @@ private:
         if (trend.creationId == 0) return ko("시작 시각 확인 불가");
         if (trend.lastSeen.secsTo(QDateTime::currentDateTime()) > 120) return ko("최근 측정 없음");
         const QString key = QString("%1:%2").arg(trend.name).arg(trend.pid);
-        return analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode).label;
+        return analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode, trend.name).label;
     }
 
     const ProcessTrend *mostImportantProcessTrend() const {
@@ -2354,7 +2490,7 @@ private:
             return QString();
         }
         const auto evidence = analyzeLeak(processHistory.value(QString("%1:%2").arg(best->name).arg(best->pid)),
-            usageMode && usageMode->currentIndex() == DeveloperMode);
+            usageMode && usageMode->currentIndex() == DeveloperMode, best->name);
         return ko("%1 전용 커밋 +%2 MB (누수 의심, 미확정)").arg(best->name).arg(evidence.deltaMb);
     }
 
@@ -2530,7 +2666,7 @@ private:
                                    .arg(signedMb(dayDelta))
                                    .arg(speedText)
                                    .arg(pattern));
-        const auto evidence = analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode);
+        const auto evidence = analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode, trend->name);
         processDetail->setText(processDetail->text() + ko("\n전용 커밋(Private Bytes): %1 MB\n%2\n작업 집합 증가와 전용 커밋 증가는 서로 다른 지표입니다.")
             .arg(trend->privateMb).arg(evidence.reason));
     }
@@ -2741,14 +2877,13 @@ private:
         dialog->deleteLater();
     }
 
-    QVector<LongTermPoint> loadLongTermPoints(int hoursBack) const {
+    QVector<LongTermPoint> loadLongTermPoints(int hoursBack, QDateTime end = QDateTime::currentDateTime(), const QString &folder = {}) const {
         QVector<LongTermPoint> result;
-        QFile file(longTermTrendPath());
+        QFile file(folder.isEmpty() ? longTermTrendPath() : folder + "/long-term-trends.csv");
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
             return result;
         }
 
-        QDateTime cutoff = QDateTime::currentDateTime().addSecs(-hoursBack * 3600);
         QTextStream in(&file);
         bool first = true;
         while (!in.atEnd()) {
@@ -2770,7 +2905,7 @@ private:
 
             LongTermPoint point;
             point.time = QDateTime::fromString(parts[0], Qt::ISODate);
-            if (!point.time.isValid() || point.time < cutoff) {
+            if (!inHistoryWindow(point.time, end, hoursBack)) {
                 continue;
             }
             point.load = parts[1].toInt();
@@ -2780,17 +2915,17 @@ private:
             point.pagedPoolMb = parts[8].toULongLong();
             result.push_back(point);
         }
+        std::stable_sort(result.begin(), result.end(), [](const LongTermPoint &a, const LongTermPoint &b) { return a.time < b.time; });
         return result;
     }
 
-    QVector<TrendEvent> loadTrendEvents(int hoursBack) const {
+    QVector<TrendEvent> loadTrendEvents(int hoursBack, QDateTime end = QDateTime::currentDateTime(), const QString &folder = {}) const {
         QVector<TrendEvent> result;
-        QFile file(trendEventsPath());
+        QFile file(folder.isEmpty() ? trendEventsPath() : folder + "/trend-events.csv");
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
             return result;
         }
 
-        QDateTime cutoff = QDateTime::currentDateTime().addSecs(-hoursBack * 3600);
         QTextStream in(&file);
         bool first = true;
         while (!in.atEnd()) {
@@ -2814,7 +2949,7 @@ private:
             event.time = QDateTime::fromString(parts[0], Qt::ISODate);
             event.label = parts[1];
             event.type = parts[2];
-            if (event.time.isValid() && event.time >= cutoff) {
+            if (inHistoryWindow(event.time, end, hoursBack)) {
                 result.push_back(event);
             }
         }
@@ -3060,11 +3195,30 @@ private:
         if (!force && lastTrendUiRefreshMs > 0 && now - lastTrendUiRefreshMs < 5 * 60 * 1000) {
             return;
         }
-        QVector<LongTermPoint> points = loadLongTermPoints(selectedTrendHours());
-        QVector<TrendEvent> events = loadTrendEvents(selectedTrendHours());
+        if (!historyPinned) trendEnd->setDateTime(QDateTime::currentDateTime());
+        const auto end = trendEnd->dateTime();
+        QVector<LongTermPoint> points = loadLongTermPoints(selectedTrendHours(), end, historyReadDir);
+        QVector<TrendEvent> events = loadTrendEvents(selectedTrendHours(), end, historyReadDir);
         trendChart->setPoints(points, darkModeEnabled());
         trendChart->setEvents(events);
         trendSummary->setText(longTermSummary(points));
+        QFile trendFile(historyReadDir + "/long-term-trends.csv"), eventsFile(historyReadDir + "/trend-events.csv");
+        trendSummary->setToolTip(ko("읽기 전용 조회 폴더: %1").arg(QDir::toNativeSeparators(historyReadDir)));
+        QStringList issues;
+        if (!trendFile.open(QIODevice::ReadOnly)) issues << ko("추세 파일 읽기 실패: %1").arg(trendFile.errorString());
+        if (!eventsFile.open(QIODevice::ReadOnly)) issues << ko("이벤트 파일 읽기 실패: %1").arg(eventsFile.errorString());
+        if (!issues.isEmpty()) trendSummary->setText(issues.join("\n"));
+        else trendSummary->setText(ko("%1 ~ %2\n%3")
+            .arg(end.addSecs(-qint64(selectedTrendHours()) * 3600).toString("yyyy-MM-dd HH:mm"))
+            .arg(end.toString("yyyy-MM-dd HH:mm")).arg(points.isEmpty() ? ko("선택 기간에 추세 기록이 없습니다.") : longTermSummary(points)));
+        eventModel->removeRows(0, eventModel->rowCount());
+        eventDetail->clear();
+        for (const auto &event : events) {
+            const QString type = event.type == "warning" ? ko("주의") : event.type == "cleanup" ? ko("정리") : ko("정보");
+            eventModel->appendRow({new QStandardItem(event.time.toString("yyyy-MM-dd HH:mm:ss")), new QStandardItem(type), new QStandardItem(event.label)});
+        }
+        eventCount->setText(events.isEmpty() ? ko("선택 기간의 이벤트가 없습니다.")
+            : ko("이벤트 %1 / %2건").arg(eventFilter->rowCount()).arg(eventModel->rowCount()));
         lastTrendUiRefreshMs = now;
     }
 
@@ -3470,7 +3624,7 @@ private:
             double speed = processTrends.contains(key) ? processGrowthPerHour(processTrends[key]) : 0.0;
             QString speedValue = std::isfinite(speed) ? QString::number(speed, 'f', 1) : "";
             QString pattern = processTrends.contains(key) ? processPatternLabel(processTrends[key]) : ko("관찰 중");
-            const auto evidence = analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode);
+            const auto evidence = analyzeLeak(processHistory.value(key), usageMode && usageMode->currentIndex() == DeveloperMode, process.name);
             QString reason = evidence.reason;
             reason.replace('"', "\"\"");
             out << time.toString(Qt::ISODate) << ','
@@ -3520,6 +3674,7 @@ private:
             return;
         }
         QString safeLabel = label;
+        lastTrendUiRefreshMs = 0;
         safeLabel.replace(',', ' ');
         QString safeType = type;
         safeType.replace(',', ' ');
@@ -3652,317 +3807,59 @@ private:
     }
 
     void applyStyle() {
-        bool dark = darkModeEnabled();
-        if (dark) {
-            setStyleSheet(R"(
-            QWidget {
-                background: #0f172a;
-                color: #e5e7eb;
-                font-family: "Malgun Gothic";
-                font-size: 14px;
-            }
-            QLabel {
-                background: transparent;
-            }
-            QLabel#metricLabel {
-                color: #94a3b8;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QLabel#metricValue {
-                color: #f8fafc;
-                font-size: 30px;
-                font-weight: 800;
-            }
-            QLabel#diagnosticCard {
-                color: #e5e7eb;
-                font-size: 14px;
-                line-height: 22px;
-            }
-            QFrame#hero, QFrame#panel, QTextEdit#log, LongTermChartWidget#inlineTrendChart {
-                background: #111827;
-                border: 1px solid #243244;
-                border-radius: 14px;
-            }
-            QLineEdit, QSpinBox, QComboBox {
-                min-height: 34px;
-                background: #0b1220;
-                color: #e5e7eb;
-                border: 1px solid #334155;
-                border-radius: 9px;
-                padding: 0 10px;
-            }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
-                border: 1px solid #2563eb;
-            }
-            QProgressBar {
-                height: 16px;
-                border: 0;
-                border-radius: 9px;
-                background: #243244;
-            }
-            QProgressBar::chunk {
-                border-radius: 9px;
-                background: #10b981;
-            }
-            QProgressBar[state="warn"]::chunk {
-                background: #f59e0b;
-            }
-            QPushButton {
-                min-height: 36px;
-                background: #111827;
-                color: #e5e7eb;
-                border: 1px solid #334155;
-                border-radius: 10px;
-                padding: 0 16px;
-                font-weight: 600;
-            }
-            QPushButton#primaryButton {
-                background: #2563eb;
-                color: white;
-                border: 0;
-                font-weight: 700;
-            }
-            QPushButton#primaryButton:hover {
-                background: #1d4ed8;
-            }
-            QPushButton#helpButton {
-                min-width: 26px;
-                min-height: 26px;
-                max-width: 26px;
-                max-height: 26px;
-                border-radius: 13px;
-                padding: 0;
-                background: #1e293b;
-                color: #bfdbfe;
-                border: 1px solid #334155;
-                font-weight: 800;
-            }
-            QTextEdit#log {
-                padding: 12px;
-                color: #cbd5e1;
-                selection-background-color: #1e40af;
-            }
-            QTabWidget#mainPages::pane {
-                border: 0;
-                background: transparent;
-            }
-            QTabBar::tab {
-                min-width: 110px;
-                min-height: 34px;
-                padding: 0 14px;
-                margin-right: 6px;
-                background: #111827;
-                color: #94a3b8;
-                border: 1px solid #243244;
-                border-radius: 8px;
-                font-weight: 700;
-            }
-            QTabBar::tab:selected {
-                background: #1d4ed8;
-                color: white;
-                border-color: #2563eb;
-            }
-            QTableWidget#processTable {
-                background: #111827;
-                alternate-background-color: #0f172a;
-                color: #e5e7eb;
-                border: 0;
-                outline: 0;
-                selection-background-color: #1e3a8a;
-                selection-color: white;
-            }
-            QTableWidget#processTable::item {
-                border-bottom: 1px solid #1f2937;
-                padding: 4px 8px;
-            }
-            QHeaderView::section {
-                background: #0b1220;
-                color: #94a3b8;
-                border: 0;
-                border-bottom: 1px solid #334155;
-                padding: 8px;
-                font-weight: 700;
-            }
-            QLabel#serverCard, QLabel#processDetail {
-                color: #cbd5e1;
-                line-height: 20px;
-            }
-            QScrollBar:vertical {
-                background: transparent;
-                width: 10px;
-                margin: 2px;
-            }
-            QScrollBar::handle:vertical {
-                background: #334155;
-                border-radius: 5px;
-                min-height: 28px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0;
-                border: 0;
-            }
-        )");
-
-            title->setStyleSheet("font-size: 26px; font-weight: 800; color: #f8fafc;");
-            subtitle->setStyleSheet("color: #94a3b8;");
-            creatorLabel->setStyleSheet("color: #60a5fa; font-size: 12px; font-weight: 700;");
-            statusPill->setStyleSheet("background: #172554; color: #bfdbfe; border-radius: 14px; padding: 8px 16px; font-weight: 700; min-width: 86px;");
-            return;
+        const bool dark = darkModeEnabled();
+        const QString bg = dark ? "#17191c" : "#f5f6f8";
+        const QString surface = dark ? "#202328" : "#ffffff";
+        const QString ink = dark ? "#edf0f3" : "#22262c";
+        const QString muted = dark ? "#adb4be" : "#596371";
+        const QString line = dark ? "#383e47" : "#d7dce2";
+        const QString accent = dark ? "#62d3ba" : "#006d5b";
+        const QString selection = dark ? "#294c44" : "#dcefe9";
+        setStyleSheet(QString(R"(
+            QWidget { background: %1; color: %3; font-family: "Malgun Gothic"; font-size: 13px; }
+            QLabel { background: transparent; border: none; padding: 0; }
+            QLabel#metricLabel { color: %4; font-size: 12px; }
+            QLabel#metricValue { color: %3; font-size: 26px; font-weight: 700; padding: 0; }
+            QFrame#hero, QFrame#panel { background: %2; border: 1px solid %5; border-radius: 6px; }
+            QTabWidget::pane { border: none; }
+            QTabBar::tab { background: %1; color: %4; padding: 12px 24px; border-bottom: 3px solid transparent; }
+            QTabBar::tab:selected { color: %6; border-bottom: 3px solid %6; font-weight: 700; }
+            QTabBar::tab:hover { background: %2; color: %3; }
+            QPushButton { background: %2; color: %3; border: 1px solid %5; border-radius: 5px; padding: 7px 12px; min-height: 22px; }
+            QPushButton:hover { border-color: %6; background: %7; }
+            QPushButton:pressed { background: %7; }
+            QPushButton:disabled { color: %4; }
+            QComboBox, QSpinBox, QDateTimeEdit, QLineEdit { background: %2; color: %3; border: 1px solid %5; border-radius: 4px; padding: 6px; min-height: 22px; }
+            QComboBox::drop-down { border: none; width: 20px; }
+            QComboBox QAbstractItemView { background: %2; color: %3; selection-background-color: %7; }
+            QTableView, QTextEdit, QPlainTextEdit { background: %2; color: %3; border: 1px solid %5; border-radius: 4px; gridline-color: %5; selection-background-color: %7; selection-color: %3; }
+            QTableView::item { padding: 5px; border: none; }
+            QHeaderView::section { background: %1; color: %4; border: none; border-bottom: 1px solid %5; padding: 8px; font-weight: 600; }
+            QProgressBar { background: %5; border: none; border-radius: 3px; min-height: 8px; max-height: 10px; text-align: center; }
+            QProgressBar::chunk { background: %6; border-radius: 3px; }
+            QCheckBox { spacing: 7px; background: transparent; }
+            QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid %5; border-radius: 3px; background: %2; }
+            QCheckBox::indicator:checked { background: %6; border-color: %6; }
+            QSplitter::handle { background: %5; height: 5px; }
+            QScrollBar:vertical { background: %1; width: 11px; }
+            QScrollBar::handle:vertical { background: %5; min-height: 24px; border-radius: 4px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QToolTip { color: %3; background: %2; border: 1px solid %5; padding: 6px; }
+        )").arg(bg, surface, ink, muted, line, accent, selection));
+        title->setText("Memory Guardian");
+        title->setStyleSheet(QString("font-size: 23px; font-weight: 700; color: %1;").arg(ink));
+        subtitle->setText(ko("메모리 상태 및 관측 기록"));
+        subtitle->setStyleSheet(QString("color: %1; font-size: 12px;").arg(muted));
+        creatorLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(muted));
+        statusPill->setStyleSheet(QString("background: %1; color: %2; border-radius: 5px; padding: 10px 14px; font-weight: 600;").arg(selection, accent));
+        for (auto *table : findChildren<QTableView *>()) {
+            table->verticalHeader()->setDefaultSectionSize(34);
+            table->setShowGrid(false);
         }
-
-        setStyleSheet(R"(
-            QWidget {
-                background: #f6f8fb;
-                color: #1c2330;
-                font-family: "Malgun Gothic";
-                font-size: 14px;
-            }
-            QLabel {
-                background: transparent;
-            }
-            QLabel#metricLabel {
-                color: #697486;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QLabel#metricValue {
-                color: #111827;
-                font-size: 30px;
-                font-weight: 800;
-            }
-            QLabel#diagnosticCard {
-                color: #1f2937;
-                font-size: 14px;
-                line-height: 22px;
-            }
-            QFrame#hero, QFrame#panel, QTextEdit#log, LongTermChartWidget#inlineTrendChart {
-                background: white;
-                border: 1px solid #dae1eb;
-                border-radius: 14px;
-            }
-            QLineEdit, QSpinBox, QComboBox {
-                min-height: 34px;
-                background: white;
-                border: 1px solid #d7dee9;
-                border-radius: 9px;
-                padding: 0 10px;
-            }
-            QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
-                border: 1px solid #2563eb;
-            }
-            QProgressBar {
-                height: 16px;
-                border: 0;
-                border-radius: 9px;
-                background: #e7ecf4;
-            }
-            QProgressBar::chunk {
-                border-radius: 9px;
-                background: #10b981;
-            }
-            QProgressBar[state="warn"]::chunk {
-                background: #f59e0b;
-            }
-            QPushButton {
-                min-height: 36px;
-                background: white;
-                border: 1px solid #d7dee9;
-                border-radius: 10px;
-                padding: 0 16px;
-                font-weight: 600;
-            }
-            QPushButton#primaryButton {
-                background: #2563eb;
-                color: white;
-                border: 0;
-                font-weight: 700;
-            }
-            QPushButton#primaryButton:hover {
-                background: #1d4ed8;
-            }
-            QPushButton#helpButton {
-                min-width: 26px;
-                min-height: 26px;
-                max-width: 26px;
-                max-height: 26px;
-                border-radius: 13px;
-                padding: 0;
-                background: #eef4ff;
-                color: #1d4ed8;
-                border: 1px solid #bfdbfe;
-                font-weight: 800;
-            }
-            QTextEdit#log {
-                padding: 12px;
-                color: #334155;
-                selection-background-color: #dbeafe;
-            }
-            QTabWidget#mainPages::pane {
-                border: 0;
-                background: transparent;
-            }
-            QTabBar::tab {
-                min-width: 110px;
-                min-height: 34px;
-                padding: 0 14px;
-                margin-right: 6px;
-                background: white;
-                color: #697486;
-                border: 1px solid #d7dee9;
-                border-radius: 8px;
-                font-weight: 700;
-            }
-            QTabBar::tab:selected {
-                background: #2563eb;
-                color: white;
-                border-color: #2563eb;
-            }
-            QTableWidget#processTable {
-                background: white;
-                alternate-background-color: #f8fafc;
-                color: #1f2937;
-                border: 0;
-                outline: 0;
-                selection-background-color: #dbeafe;
-                selection-color: #1e3a8a;
-            }
-            QTableWidget#processTable::item {
-                border-bottom: 1px solid #e5e7eb;
-                padding: 4px 8px;
-            }
-            QHeaderView::section {
-                background: #f8fafc;
-                color: #697486;
-                border: 0;
-                border-bottom: 1px solid #d7dee9;
-                padding: 8px;
-                font-weight: 700;
-            }
-            QLabel#serverCard, QLabel#processDetail {
-                color: #334155;
-                line-height: 20px;
-            }
-            QScrollBar:vertical {
-                background: transparent;
-                width: 10px;
-                margin: 2px;
-            }
-            QScrollBar::handle:vertical {
-                background: #cbd5e1;
-                border-radius: 5px;
-                min-height: 28px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0;
-                border: 0;
-            }
-        )");
-
-        title->setStyleSheet("font-size: 26px; font-weight: 800; color: #111827;");
-        subtitle->setStyleSheet("color: #697486;");
-        creatorLabel->setStyleSheet("color: #2563eb; font-size: 12px; font-weight: 700;");
-        statusPill->setStyleSheet("background: #e8f1ff; color: #1d4ed8; border-radius: 14px; padding: 8px 16px; font-weight: 700; min-width: 86px;");
+        for (auto *button : findChildren<QPushButton *>()) {
+            if (button->text() == "?") button->setStyleSheet("padding: 0; min-width: 22px; min-height: 22px;");
+        }
+        if (trendChart) refreshInlineTrend(true);
     }
 };
 
