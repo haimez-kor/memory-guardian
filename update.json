@@ -1,7 +1,7 @@
 ﻿{
-    "version":  "1.3.18",
-    "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/download/v1.3.18/MemoryGuardianSetup.exe",
-    "sha256":  "7157BDC55064FF33C9327D0BD56C817E2A1D79ACC77B3CDFAE3696BA7CC97293",
-    "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/download/v1.3.18/SHA256SUMS.txt",
-    "notes":  "Private-commit leak analysis, responsive monitoring, accurate metrics, and conservative self-cleanup."
+    "version":  "1.4.0",
+    "downloadUrl":  "https://github.com/haimez-kor/memory-guardian/releases/download/v1.4.0/MemoryGuardianSetup.exe",
+    "sha256":  "0B4E9B4E679AC946EE143D425841E07F18872EFF54DE51BD6FC02D4BFD911A14",
+    "checksumUrl":  "https://github.com/haimez-kor/memory-guardian/releases/download/v1.4.0/SHA256SUMS.txt",
+    "notes":  "New dark/light UI, searchable historical events, date-range charts, improved game detection, and conservative Java/browser growth analysis."
 }
